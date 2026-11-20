@@ -29,8 +29,11 @@ var tuning: Dictionary = {}
 const GameStateScript = preload("res://scripts/core/game_state.gd")
 const RNGScript = preload("res://scripts/core/rng.gd")
 
-var game_state: GameState
-var rng: SeededRNG
+# Do not rely on Godot's editor-generated global class cache here.  The
+# headless contract invokes this script directly, before that cache is
+# necessarily available on a clean clone.
+var game_state
+var rng
 
 var events: Array[Dictionary] = []
 
@@ -47,7 +50,8 @@ var _pulse_this_step: bool = false
 func initialize(seed_value: int, duration_s: float = -1.0) -> void:
 	tuning = _load_tuning()
 	game_state = GameStateScript.new()
-	game_state.time_left_s = _number("night1_duration_s", NIGHT_DURATION_S) if duration_s < 0.0 else duration_s
+	game_state.initial_time_left_s = _number("night1_duration_s", NIGHT_DURATION_S) if duration_s < 0.0 else duration_s
+	game_state.time_left_s = game_state.initial_time_left_s
 	game_state.flames = int(tuning.get("flames", 3))
 
 	rng = RNGScript.new()
@@ -92,7 +96,10 @@ func step(frame: Dictionary = {}) -> void:
 		_invuln_remaining -= 1
 
 	game_state.sim_tick += 1
-	game_state.time_left_s = maxf(0.0, game_state.time_left_s - (1.0 / float(TICK_RATE)))
+	game_state.time_left_s = maxf(
+		0.0,
+		game_state.initial_time_left_s - float(game_state.sim_tick) / float(TICK_RATE)
+	)
 	_evaluate_terminal()
 
 
@@ -339,11 +346,20 @@ func _apply_player_hit(source: String) -> void:
 
 
 func _number(key: String, fallback: float) -> float:
-	return float(tuning.get(key, fallback))
+	return float(_tuning_value(key, fallback))
 
 
 func _integer(key: String, fallback: int) -> int:
-	return int(tuning.get(key, fallback))
+	return int(_tuning_value(key, fallback))
+
+
+func _tuning_value(key: String, fallback: Variant) -> Variant:
+	var value: Variant = tuning
+	for segment in key.split("."):
+		if not value is Dictionary or not value.has(segment):
+			return fallback
+		value = value[segment]
+	return value
 
 
 func _load_tuning() -> Dictionary:
@@ -361,15 +377,15 @@ func _load_tuning() -> Dictionary:
 func _evaluate_terminal() -> void:
 	if game_state.state != "playing":
 		return
-	var all_lit := game_state.lanterns.size() == 5
+	var all_lit: bool = game_state.lanterns.size() == 5
 	for lantern in game_state.lanterns:
 		if not bool(lantern.get("lit", false)):
 			all_lit = false
 			break
 	if all_lit:
 		game_state.state = "won"
-		var time_bonus := int(floor(game_state.time_left_s)) * _integer("score.per_second_left", 2)
-		var flame_bonus := game_state.flames * _integer("score.per_flame_left", 50)
+		var time_bonus: int = int(floor(game_state.time_left_s)) * _integer("score.per_second_left", 2)
+		var flame_bonus: int = game_state.flames * _integer("score.per_flame_left", 50)
 		game_state.score += time_bonus + flame_bonus
 		events.append({
 			"type":"game_over", "tick":game_state.sim_tick,

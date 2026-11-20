@@ -12,5 +12,12 @@ Commands:
 ```bash
 godot --headless --path . --editor --quit
 godot --headless --path . --script res://tests/test_simulation.gd
+./tests/run_contract_checks.sh
 godot --headless --path . --script res://scripts/headless/main.gd -- --seed 123 --night 1 --ticks 600 --out /tmp/phase1-smoke.jsonl
 ```
+
+Current evidence files:
+
+- `logs/contract-checks.txt`: unit suite plus contract scenarios for pickup,
+  deposit, lantern lighting, winning, malformed input and deterministic replay.
+- `logs/smoke.jsonl`: actual headless output from the current Phase 1 source.

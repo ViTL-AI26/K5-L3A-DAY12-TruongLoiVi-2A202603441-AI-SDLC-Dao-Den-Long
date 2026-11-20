@@ -10,6 +10,10 @@
 - Added jump and win-bonus regression tests.
 - Added README and evidence checklist.
 
-Validation note: Godot was not available in the editing environment; run the documented build, graphical and test commands with Godot 4.7.2 before tagging `phase-1`.
+Validation note: validated with Godot 4.7.2 using
+`godot --headless --path . --script res://tests/test_simulation.gd` and
+`./tests/run_contract_checks.sh`. The latter executes the real headless entry
+point for pickup, deposit, lantern lighting, winning, invalid input and
+deterministic replay.
 
 - Gameplay balance: increased the graphical starting mote supply from 15 to 25 so the five lanterns (5 motes each) are achievable; added a regression test for hit-drop recovery and lantern persistence.

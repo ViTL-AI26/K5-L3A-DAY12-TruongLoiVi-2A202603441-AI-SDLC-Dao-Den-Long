@@ -247,7 +247,11 @@ func _setup_default_entities(sim) -> void:
 		Vector3(11,0,11), Vector3(-12,0,10), Vector3(3,0,-9),
 		Vector3(-5,0,-13), Vector3(15,0,-4), Vector3(-16,0,-3),
 		Vector3(0,0,16), Vector3(8,0,-15), Vector3(-10,0,-16),
-		Vector3(17,0,8), Vector3(-18,0,7), Vector3(4,0,21)
+		Vector3(17,0,8), Vector3(-18,0,7), Vector3(4,0,21),
+		Vector3(5,0,13), Vector3(-8,0,17), Vector3(13,0,-11),
+		Vector3(-14,0,-12), Vector3(20,0,1), Vector3(-21,0,0),
+		Vector3(2,0,-20), Vector3(20,0,13), Vector3(-20,0,14),
+		Vector3(10,0,21)
 	]
 	for i in range(positions.size()):
 		sim.game_state.motes.append({"id":"M%d" % (i+1), "pos":positions[i]})
@@ -305,7 +309,8 @@ func _apply_scenario(sim, scenario: Dictionary) -> bool:
 		if not _is_number(time_value) or float(time_value) < 0.0:
 			_fail("time_left_s must be a non-negative number.")
 			return false
-		sim.game_state.time_left_s = float(time_value)
+		sim.game_state.initial_time_left_s = float(time_value)
+		sim.game_state.time_left_s = sim.game_state.initial_time_left_s
 
 	for boolean_field in ["random_motes", "random_shades"]:
 		if scenario.has(boolean_field) and not scenario[boolean_field] is bool:

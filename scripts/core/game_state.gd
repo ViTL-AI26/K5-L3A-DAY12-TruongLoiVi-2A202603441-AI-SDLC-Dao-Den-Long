@@ -4,6 +4,7 @@ class_name GameState
 var sim_tick: int = 0
 var state: String = "playing"
 var time_left_s: float = 300.0
+var initial_time_left_s: float = 300.0
 var score: int = 0
 
 var player_pos: Vector3 = Vector3.ZERO

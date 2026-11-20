@@ -47,6 +47,7 @@ Có thể thêm `--scenario file.json`, `--inputs file.json` và `--snapshot-eve
 
 ```bash
 godot --headless --path . --script res://tests/test_simulation.gd
+./tests/run_contract_checks.sh
 ```
 
 ## Phạm vi
