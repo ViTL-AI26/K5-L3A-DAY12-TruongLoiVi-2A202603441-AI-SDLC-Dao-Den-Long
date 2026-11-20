@@ -26,9 +26,11 @@ var last_state := "playing"
 var elapsed_visual := 0.0
 var current_night := 1
 var campaign_score := 0
+var colorblind_mode := false
 
 
 func _ready() -> void:
+	_load_settings()
 	if get_tree().has_meta("lantern_current_night"):
 		current_night = int(get_tree().get_meta("lantern_current_night"))
 		campaign_score = int(get_tree().get_meta("lantern_campaign_score", 0))
@@ -68,7 +70,7 @@ func _setup_default_entities() -> void:
 		shade_points = _circle_points(Vector3.ZERO, 43, 16, 22.5)
 		sim.game_state.charms = [{"id":"C1", "pos":Vector3(30,0,25), "available":true, "respawn_ticks":0}, {"id":"C2", "pos":Vector3(-30,0,25), "available":true, "respawn_ticks":0}]
 	for i in lantern_positions.size():
-		sim.game_state.lanterns.append({"id":"L%d" % (i + 1), "pos":lantern_positions[i], "deposited":0, "lit":false})
+		sim.game_state.lanterns.append({"id":"L%d" % (i + 1), "pos":lantern_positions[i], "deposited":0, "lit":false, "fuel_ticks":0, "ever_lit":false, "relit_count":0})
 	sim.game_state.mote_spawn_points = mote_positions
 	sim.game_state.shade_spawn_points = shade_points
 	for i in range(mini(20, mote_positions.size())):
@@ -159,7 +161,7 @@ func _build_hud() -> void:
 	hud.add_theme_constant_override("shadow_offset_y", 2)
 	layer.add_child(hud)
 	var controls := Label.new()
-	controls.text = "WASD: di chuyển   Space: nhảy   Shift: lướt   E: nạp đèn   Q: tỏa sáng   P: tạm dừng   Mouse: camera"
+	controls.text = "WASD: di chuyển   Space: nhảy   Shift: lướt   E: nạp/châm dầu   Q: tỏa sáng   P: tạm dừng   C: màu dễ phân biệt"
 	controls.position = Vector2(24, get_viewport().get_visible_rect().size.y - 42)
 	controls.add_theme_font_size_override("font_size", 14)
 	controls.add_theme_color_override("font_color", Color(0.88,0.88,0.95))
@@ -240,6 +242,12 @@ func _input(event: InputEvent) -> void:
 		camera_pitch = clampf(camera_pitch - event.relative.y * 0.002, -0.85, 0.1)
 	if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_C:
+		colorblind_mode = not colorblind_mode
+		_save_settings()
+		for node in visual_shades.values():
+			(node as Node3D).queue_free()
+		visual_shades.clear()
 	if event is InputEventMouseButton and event.pressed:
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
 			camera_distance = maxf(5.0, camera_distance - 0.7)
@@ -271,11 +279,15 @@ func _sync_world() -> void:
 		var node: Node3D = visual_lanterns[id]
 		node.position = lantern.pos
 		var flame: OmniLight3D = node.get_node("FlameLight")
-		flame.visible = bool(lantern.lit)
-		flame.light_energy = 2.5 if lantern.lit else 0.0
+		var fuel_ratio: float = float(lantern.get("fuel_ticks", 0)) / 6000.0
+		var low: bool = bool(lantern.lit) and float(lantern.get("fuel_ticks", 0)) < 1800.0
+		var blink: bool = not low or int(floor(elapsed_visual)) % 2 == 0
+		flame.visible = bool(lantern.lit) and blink
+		flame.light_energy = 2.5 * fuel_ratio if bool(lantern.lit) else 0.0
 		var orb: MeshInstance3D = node.get_node("Flame")
-		orb.visible = bool(lantern.lit)
+		orb.visible = bool(lantern.lit) and blink
 		orb.material_override = _material(Color(1.0,0.55,0.12), 2.0)
+		node.scale = Vector3.ONE if bool(lantern.lit) else Vector3(0.8, 0.8, 0.8)
 
 
 func _sync_entities(items: Array, nodes: Dictionary, kind: String) -> void:
@@ -308,11 +320,17 @@ func _update_hud() -> void:
 	for lantern in sim.game_state.lanterns:
 		if lantern.lit: lit += 1
 	var time := maxi(0, int(ceil(sim.game_state.time_left_s)))
-	hud.text = "ĐÊM %d   ✦ %d   |   Đom đóm: %d/10   |   Đèn: %d/%d   |   Điểm: %d   |   %02d:%02d\nLướt: %.1fs   Tỏa sáng: %.1fs   Bùa Gió: %.1fs%s" % [
-		current_night, sim.game_state.flames, sim.game_state.carried, lit, sim.game_state.lanterns.size(),
+	var nearby_fuel := ""
+	for lantern in sim.game_state.lanterns:
+		if _horizontal_distance(sim.game_state.player_pos, lantern.pos) <= 2.0:
+			nearby_fuel = "   Đèn %s: %.1f/100" % [lantern.id, float(lantern.get("fuel_ticks", 0)) / 60.0]
+			break
+	hud.text = "ĐÊM %d   ✦ %d   |   Đom đóm: %d/%d   |   Đèn: %d/%d   |   Điểm: %d   |   %02d:%02d\nLướt: %.1fs   Tỏa sáng: %.1fs   Bùa Gió: %.1fs%s%s%s" % [
+		current_night, sim.game_state.flames, sim.game_state.carried, 10 + 2 * sim.game_state.successful_lights if 10 + 2 * sim.game_state.successful_lights < 20 else 20, lit, sim.game_state.lanterns.size(),
 		campaign_score + sim.game_state.score, time / 60, time % 60,
 		float(sim.game_state.dash_cd_ticks) / 60.0, float(sim.game_state.pulse_cd_ticks) / 60.0, float(sim.game_state.charm_ticks) / 60.0,
-		"   [TẠM DỪNG]" if sim.game_state.paused else ""
+		"   [TẠM DỪNG]" if sim.game_state.paused else "", nearby_fuel,
+		"   ⚠ MÀU DỄ PHÂN BIỆT" if colorblind_mode else ""
 	]
 
 
@@ -355,9 +373,26 @@ func _create_shade(id: String) -> Node3D:
 	add_child(root)
 	_make_sphere_child(root, Vector3(0,0.1,0), 0.65, Color(0.055,0.025,0.10))
 	_make_sphere_child(root, Vector3(0,0.62,0), 0.48, Color(0.10,0.035,0.16))
-	_make_sphere_child(root, Vector3(-0.16,0.7,-0.38), 0.07, Color(0.85,0.24,0.65), 1.4)
-	_make_sphere_child(root, Vector3(0.16,0.7,-0.38), 0.07, Color(0.85,0.24,0.65), 1.4)
+	var eye_color := Color("00B3FF") if colorblind_mode else Color("7A3CFF")
+	_make_sphere_child(root, Vector3(-0.16,0.7,-0.38), 0.07, eye_color, 1.4)
+	_make_sphere_child(root, Vector3(0.16,0.7,-0.38), 0.07, eye_color, 1.4)
 	return root
+
+
+func _horizontal_distance(a: Vector3, b: Vector3) -> float:
+	return Vector2(a.x - b.x, a.z - b.z).length()
+
+
+func _load_settings() -> void:
+	var config := ConfigFile.new()
+	if config.load("user://settings.cfg") == OK:
+		colorblind_mode = bool(config.get_value("accessibility", "colorblind_mode", false))
+
+
+func _save_settings() -> void:
+	var config := ConfigFile.new()
+	config.set_value("accessibility", "colorblind_mode", colorblind_mode)
+	config.save("user://settings.cfg")
 
 
 func _make_box(n: String, p: Vector3, size: Vector3, color: Color, parent: Node) -> MeshInstance3D:

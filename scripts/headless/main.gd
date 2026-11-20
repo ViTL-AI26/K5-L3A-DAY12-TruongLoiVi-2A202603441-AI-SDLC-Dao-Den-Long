@@ -253,7 +253,7 @@ func _setup_world(sim, night: int) -> void:
 		shade_points = _circle(Vector3.ZERO, 43, 16, 22.5)
 		sim.game_state.charms = [{"id":"C1", "pos":Vector3(30,0,25), "available":true, "respawn_ticks":0}, {"id":"C2", "pos":Vector3(-30,0,25), "available":true, "respawn_ticks":0}]
 	for i in range(lantern_positions.size()):
-		sim.game_state.lanterns.append({"id":"L%d" % (i + 1), "pos":lantern_positions[i], "deposited":0, "lit":false})
+		sim.game_state.lanterns.append({"id":"L%d" % (i + 1), "pos":lantern_positions[i], "deposited":0, "lit":false, "fuel_ticks":0, "ever_lit":false, "relit_count":0})
 	sim.game_state.mote_spawn_points = mote_points
 	sim.game_state.shade_spawn_points = shade_points
 	for i in range(mini(20, mote_points.size())):
@@ -283,7 +283,7 @@ func _apply_scenario(sim, scenario: Dictionary) -> bool:
 			_fail("scenario.player must be an object.")
 			return false
 		for key in player.keys():
-			if key not in ["pos", "carried", "flames", "invuln_ticks", "dash_cd_ticks", "pulse_cd_ticks", "charm_ticks"]:
+			if key not in ["pos", "carried", "flames", "successful_lights", "invuln_ticks", "dash_cd_ticks", "pulse_cd_ticks", "charm_ticks"]:
 				_fail("Unknown player field: " + str(key))
 				return false
 		if player.has("pos"):
@@ -291,10 +291,16 @@ func _apply_scenario(sim, scenario: Dictionary) -> bool:
 			if player_pos == null:
 				return false
 			sim.game_state.player_pos = player_pos
+		if player.has("successful_lights"):
+			if not _is_integer(player["successful_lights"]) or int(player["successful_lights"]) < 0:
+				_fail("player.successful_lights must be a non-negative integer.")
+				return false
+			sim.game_state.successful_lights = int(player["successful_lights"])
 		if player.has("carried"):
 			var carried: Variant = player["carried"]
-			if not _is_integer(carried) or float(carried) < 0.0 or int(carried) > 10:
-				_fail("player.carried must be an integer between 0 and carry_capacity (10).")
+			var capacity: int = mini(20, 10 + 2 * sim.game_state.successful_lights)
+			if not _is_integer(carried) or float(carried) < 0.0 or int(carried) > capacity:
+				_fail("player.carried must be an integer between 0 and current capacity.")
 				return false
 			sim.game_state.carried = int(carried)
 		if player.has("flames"):
@@ -354,7 +360,7 @@ func _apply_scenario(sim, scenario: Dictionary) -> bool:
 				_fail("Each shade must be an object with pos.")
 				return false
 			for key in shade.keys():
-				if key not in ["id", "pos", "state", "state_ticks_left"]:
+				if key not in ["id", "pos", "state", "state_ticks_left", "target_lantern_id"]:
 					_fail("Unknown shade field: " + str(key))
 					return false
 			var shade_pos: Variant = _vector_from_array(shade["pos"], "shades[%d].pos" % i)
@@ -366,14 +372,15 @@ func _apply_scenario(sim, scenario: Dictionary) -> bool:
 				return false
 			shade_ids[shade_id] = true
 			var shade_state := str(shade.get("state", "wander"))
-			if shade_state not in ["spawning", "wander", "chase", "recoil", "stunned"]:
+			if shade_state not in ["spawning", "wander", "chase", "recoil", "stunned", "drain"]:
 				_fail("Invalid shade state: " + shade_state)
 				return false
 			sim.game_state.shades.append({
 				"id": shade_id,
 				"pos": shade_pos,
 				"state": shade_state,
-				"state_ticks_left": int(shade.get("state_ticks_left", 0))
+				"state_ticks_left": int(shade.get("state_ticks_left", 0)),
+				"target_lantern_id": str(shade.get("target_lantern_id", ""))
 			})
 
 	if scenario.has("drifters"):
@@ -420,7 +427,7 @@ func _apply_scenario(sim, scenario: Dictionary) -> bool:
 				_fail("Each lantern override must be an object with id.")
 				return false
 			for key in override.keys():
-				if key not in ["id", "pos", "deposited", "lit"]:
+				if key not in ["id", "pos", "deposited", "lit", "fuel", "ever_lit"]:
 					_fail("Unknown lantern field: " + str(key))
 					return false
 			var override_id := str(override["id"])
@@ -449,6 +456,21 @@ func _apply_scenario(sim, scenario: Dictionary) -> bool:
 						_fail("lantern.lit must be boolean.")
 						return false
 					lantern["lit"] = override["lit"]
+					if bool(override["lit"]) and not override.has("ever_lit"):
+						lantern["ever_lit"] = true
+				if override.has("fuel"):
+					var fuel: Variant = override["fuel"]
+					if not _is_number(fuel) or float(fuel) < 0.0 or float(fuel) > 100.0:
+						_fail("lantern.fuel must be a number between 0 and 100.")
+						return false
+					lantern["fuel_ticks"] = int(round(float(fuel) * 60.0))
+				elif bool(lantern.get("lit", false)):
+					lantern["fuel_ticks"] = 6000
+				if override.has("ever_lit"):
+					if not override["ever_lit"] is bool:
+						_fail("lantern.ever_lit must be boolean.")
+						return false
+					lantern["ever_lit"] = override["ever_lit"]
 			if not found:
 				_fail("Unknown lantern id: " + str(override["id"]))
 				return false
@@ -489,7 +511,10 @@ func _write_snapshot(output: FileAccess, sim) -> void:
 			"id": str(lantern["id"]),
 			"pos": _vec_array(lantern["pos"]),
 			"lit": bool(lantern.get("lit", false)),
-			"deposited": int(lantern.get("deposited", 0))
+			"deposited": int(lantern.get("deposited", 0)),
+			"fuel": snappedf(float(int(lantern.get("fuel_ticks", 0))) / 60.0, 0.1),
+			"ever_lit": bool(lantern.get("ever_lit", false)),
+			"relit_count": int(lantern.get("relit_count", 0))
 		})
 	var shades: Array = []
 	for shade in state.shades:
@@ -522,6 +547,7 @@ func _write_snapshot(output: FileAccess, sim) -> void:
 			"grounded": state.grounded,
 			"flames": state.flames,
 			"carried": state.carried,
+			"capacity": mini(20, 10 + 2 * state.successful_lights),
 			"invuln": state.invuln_ticks,
 			"dash_cd_s": snappedf(state.dash_cd_ticks / 60.0, 0.001),
 			"pulse_cd_s": snappedf(state.pulse_cd_ticks / 60.0, 0.001),

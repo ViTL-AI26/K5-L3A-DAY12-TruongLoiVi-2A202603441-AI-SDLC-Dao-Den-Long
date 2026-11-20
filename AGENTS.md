@@ -5,14 +5,17 @@
 - docs/specs/test-contract-v1.0.md
 - docs/specs/test-contract-v1.1.md
 - docs/specs/TICKET-02.md
+- docs/specs/TICKET-03.md
+- docs/specs/test-contract-v1.2.md
 - docs/plans/phase-1-plan.md
 - docs/plans/phase-2-plan.md
+- docs/plans/phase-3-plan.md
 - docs/specs/ASSUMPTIONS.md
 
 Read these documents before implementation.
 
 ## Rules
-1. Follow PRD-0 and the latest Test Contract exactly. Ticket-02 / Contract v1.1 supersedes v1.0 where they differ.
+1. Follow PRD-0 and the latest Test Contract exactly. Ticket-03 / Contract v1.2 supersedes prior rules where it differs.
 2. Do not invent or change required JSONL fields, event names or payloads.
 3. Use one deterministic simulation core for graphical and headless modes.
 4. Simulation runs at fixed 60 ticks per second.

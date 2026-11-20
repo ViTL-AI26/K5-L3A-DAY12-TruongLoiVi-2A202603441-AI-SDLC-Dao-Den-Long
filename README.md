@@ -21,17 +21,18 @@ godot --path .
 - `Q`: phát xung sáng, tiêu hao 1 đom đóm.
 - `Shift`: lướt 0.2 giây theo hướng đang đi.
 - `P`: tạm dừng/tiếp tục mô phỏng.
+- `C`: bật/tắt bảng màu dễ phân biệt (được lưu cục bộ).
 - Di chuyển chuột: xoay camera; con lăn: zoom.
 - `Esc`: thả chuột; click trái để bắt chuột lại.
 - `R`: chơi lại sau khi thắng/thua.
 
 ## Luật và điểm
 
-- Nạp một đom đóm: +10 điểm; thắp một đèn: +100 điểm.
-- Tỏa Sáng trúng Bóng Mực: +5 điểm, tốn 3 đom đóm, bán kính 5 m và làm choáng 2 giây.
-- Khi thắng: cộng `floor(time_left_s) × 2` và `flames_remaining × 50`.
+- Đèn mới cần 10 đom đóm, có 100 dầu và hao 1 dầu/giây; thắp lại sau khi cạn cần 5 đom đóm. Châm dầu dùng đom đóm để thêm 10 dầu mỗi chiếc.
+- Mỗi đom đóm nạp vào đèn: +5; thắp lần đầu: +100; thắp lại: +40; Tỏa Sáng trúng Bóng Mực: +5 (hoặc tổng +15 nếu nó đang hút dầu).
+- Chỉ xét kết quả ở bình minh: cần tối thiểu 60% đèn đang sáng. Mỗi đèn sáng thưởng `50 + floor(fuel)` và mỗi Ngọn Lửa còn lại +50.
 - Người chơi có 3 flame; va chạm Bóng Mực làm mất 1 flame và rơi 50% số đom đóm đang mang (làm tròn xuống).
-- Đèn đã sáng tạo vùng an toàn bán kính 6 m.
+- Đèn chỉ tạo vùng an toàn bán kính 6 m khi dầu còn ít nhất 30; Bóng Mực có thể hút dầu ở đèn yếu.
 - Đêm 2–3 có Gió Lạc cướp đom đóm; Bùa Gió tăng tốc trong 10 giây; Đêm 3 có gió mạnh theo chu kỳ.
 
 Các tuning values được giữ trong `game.contract.json`; simulation đọc tuning từ file này. Các lựa chọn gameplay chưa được PRD/Test Contract quy định (ví dụ vị trí mặc định, tốc độ nhảy, trọng lực, số lượng đom đóm/Bóng Mực ban đầu) là quyết định triển khai, không phải yêu cầu nguyên văn của khách hàng.
@@ -53,4 +54,4 @@ godot --headless --path . --script res://tests/test_simulation.gd
 
 ## Phạm vi
 
-Đây là prototype Phase 2 với lõi mô phỏng quyết định dùng chung cho đồ họa và headless. Chi tiết contract và acceptance criteria nằm ở [Ticket-02](docs/specs/TICKET-02.md) và [Phase 2 plan](docs/plans/phase-2-plan.md).
+Đây là prototype Phase 3 với lõi mô phỏng quyết định dùng chung cho đồ họa và headless. Chi tiết contract và acceptance criteria nằm ở [Ticket-03](docs/specs/TICKET-03.md) và [Phase 3 plan](docs/plans/phase-3-plan.md).

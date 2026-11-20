@@ -19,6 +19,9 @@ run_headless --seed 7 --night 1 --scenario "$fixtures_dir/phase2-dash-pause-scen
 run_headless --seed 7 --night 2 --scenario "$fixtures_dir/phase2-drifter-scenario.json" --ticks 1 --snapshot-every 1 --out "$tmp_dir/drifter.jsonl"
 run_headless --seed 7 --night 2 --scenario "$fixtures_dir/phase2-charm-scenario.json" --ticks 1 --snapshot-every 1 --out "$tmp_dir/charm.jsonl"
 run_headless --seed 7 --night 3 --scenario "$fixtures_dir/phase2-wind-disabled-scenario.json" --ticks 1801 --snapshot-every 1801 --out "$tmp_dir/wind.jsonl"
+run_headless --seed 7 --night 1 --scenario "$fixtures_dir/phase3-fuel-scenario.json" --inputs "$fixtures_dir/phase3-fuel-inputs.json" --ticks 2 --snapshot-every 1 --out "$tmp_dir/fuel.jsonl"
+run_headless --seed 7 --night 1 --scenario "$fixtures_dir/phase3-drain-scenario.json" --ticks 60 --snapshot-every 60 --out "$tmp_dir/drain.jsonl"
+run_headless --seed 7 --night 1 --scenario "$fixtures_dir/phase3-dawn-scenario.json" --ticks 1 --snapshot-every 1 --out "$tmp_dir/dawn.jsonl"
 run_headless --seed 123 --night 3 --ticks 90 --out "$tmp_dir/determinism-a.jsonl"
 run_headless --seed 123 --night 3 --ticks 90 --out "$tmp_dir/determinism-b.jsonl"
 cmp "$tmp_dir/determinism-a.jsonl" "$tmp_dir/determinism-b.jsonl"
@@ -52,6 +55,15 @@ assert names('charm.jsonl') == ['night_start', 'charm_picked']
 wind = records('wind.jsonl')
 assert wind[-2]['wind']['active'] is False
 assert wind[-1]['type'] == 'end'
+fuel = records('fuel.jsonl')
+assert names('fuel.jsonl') == ['night_start', 'deposit', 'lantern_lit']
+assert next(e for e in events('fuel.jsonl') if e['name'] == 'lantern_lit')['data']['relight'] is False
+assert next(r for r in fuel if r.get('type') == 'snapshot' and r.get('sim_tick') == 1)['lanterns'][0]['fuel'] == 100.0
+assert next(r for r in fuel if r.get('type') == 'snapshot' and r.get('sim_tick') == 1)['player']['capacity'] == 12
+assert any(e['name'] == 'fuel_drain' for e in events('drain.jsonl'))
+dawn_events = events('dawn.jsonl')
+assert dawn_events[-1]['name'] == 'game_over' and dawn_events[-1]['data']['reason'] == 'dawn_survived'
+assert records('dawn.jsonl')[-1]['state'] == 'won'
 PY
 
-echo "Phase 2 contract checks passed."
+echo "Phase 3 contract checks passed."

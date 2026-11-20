@@ -16,6 +16,7 @@ var facing: Vector3 = Vector3.FORWARD
 var grounded: bool = true
 var flames: int = 3
 var carried: int = 0
+var successful_lights: int = 0
 var invuln_ticks: int = 0
 var dash_cd_ticks: int = 0
 var pulse_cd_ticks: int = 0
