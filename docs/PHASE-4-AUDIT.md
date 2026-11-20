@@ -15,6 +15,6 @@ The committed soak run reports 10 nights, 0 crashes and no RSS growth. A 30-seco
 ## Remaining external/manual release gates
 
 1. **Instructor-target benchmark validation:** the included `bench.json` is a real graphical 1280×720/VSync-off local run. Run `bench_cmd` again only if the instructor announces a different required target machine, then replace the evidence with that target measurement.
-2. **Docker image and GitHub Release:** Docker CLI is installed but its daemon is not running in this workspace, and GitHub CLI/account release authority is unavailable. Start Docker Desktop/Engine, build/tag the documented image, then create GitHub Release `v1.0.0` and attach `docker save` output or another exported platform build.
+2. **GitHub Release publication:** the verified ARM64 Docker image `dao-den-long:v1.0.0` was built and smoke-tested; its exported tar is `dao-den-long-v1.0.0-arm64.tar` (184 MB, SHA-256 `4d68ecd32e1190aae493370e12bf3c5cce900a7626b67387cf6b9ce74c3cb219`). GitHub CLI/account release authority is unavailable in this session, so create GitHub Release `v1.0.0` and attach that tar (or another exported platform build) from an authorized account.
 3. **Demo media (explicitly excluded by requester):** `docs/demo/demo.mp4` predates this release. It was intentionally not replaced in this task.
 4. **Manual UI check:** exercise the graphical menu/settings/rebinding screen at 1280×720 once on the target machine. The implementation is present; this is a final human visual/usability check rather than a missing code feature.
