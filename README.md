@@ -1,4 +1,6 @@
-# Đảo Đèn Lồng — Phase 1
+# Đảo Đèn Lồng
+
+[🎬 Xem video demo](docs/demo/demo.mp4)
 
 Game 3D Godot 4.7.2: Đêm 1 – Đảo Bến. Mây thu thập đom đóm, nạp năm Đèn Lồng Lớn và né Bóng Mực trên hòn đảo giữa biển mây.
 
