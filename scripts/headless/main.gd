@@ -54,9 +54,8 @@ func _run() -> void:
 		return
 
 	var sim = SimulationScript.new()
-	sim.initialize(int(options["seed"]))
-	_setup_default_lanterns(sim)
-	_setup_default_entities(sim)
+	sim.initialize(int(options["seed"]), int(options["night"]))
+	_setup_world(sim, int(options["night"]))
 
 	if not _apply_scenario(sim, scenario):
 		return
@@ -70,13 +69,16 @@ func _run() -> void:
 	var snapshot_every: int = int(options["snapshot_every"])
 	var requested_ticks: int = int(options["ticks"])
 	_write_snapshot(output, sim)
+	_write_event(output, {"type": "night_start", "tick": 0, "night": sim.game_state.night})
 
 	var active_input: Dictionary = {
 		"move": [0.0, 0.0],
 		"cam_yaw_deg": 0.0,
 		"jump": false,
 		"interact": false,
-		"pulse": false
+		"pulse": false,
+		"dash": false,
+		"pause": false
 	}
 	var frame_index: int = 0
 
@@ -91,7 +93,6 @@ func _run() -> void:
 			frame_index += 1
 
 		sim.step(active_input)
-		_check_terminal_state(sim)
 
 		for event in sim.drain_events():
 			_write_event(output, event)
@@ -150,8 +151,8 @@ func _parse_args(args: PackedStringArray) -> Dictionary:
 	if not str(result["seed"]).is_valid_int():
 		_fail("--seed must be an integer.", 1)
 		return {}
-	if str(result["night"]) != "1":
-		_fail("Only --night 1 is supported.", 1)
+	if not str(result["night"]).is_valid_int() or int(result["night"]) < 1 or int(result["night"]) > 3:
+		_fail("--night must be 1, 2 or 3.", 1)
 		return {}
 	if not str(result["ticks"]).is_valid_int() or int(result["ticks"]) < 0:
 		_fail("--ticks must be a non-negative integer.", 1)
@@ -188,7 +189,6 @@ func _validate_frames(frames: Variant) -> bool:
 	if not frames is Array:
 		_fail("inputs.frames must be an array.")
 		return false
-
 	var previous_tick: int = -1
 	for frame in frames:
 		if not frame is Dictionary or not frame.has("tick"):
@@ -203,12 +203,10 @@ func _validate_frames(frames: Variant) -> bool:
 			_fail("Input frame ticks must be non-negative and strictly increasing.")
 			return false
 		previous_tick = tick
-
 		for key in frame.keys():
-			if key not in ["tick", "move", "cam_yaw_deg", "jump", "interact", "pulse"]:
+			if key not in ["tick", "move", "cam_yaw_deg", "jump", "interact", "pulse", "dash", "pause"]:
 				_fail("Unknown input field: " + str(key))
 				return false
-
 		if frame.has("move"):
 			var move: Variant = frame["move"]
 			if not move is Array or move.size() != 2:
@@ -221,44 +219,46 @@ func _validate_frames(frames: Variant) -> bool:
 		if frame.has("cam_yaw_deg") and not _is_number(frame["cam_yaw_deg"]):
 			_fail("cam_yaw_deg must be numeric.")
 			return false
-		for key in ["jump", "interact", "pulse"]:
+		for key in ["jump", "interact", "pulse", "dash", "pause"]:
 			if frame.has(key) and not frame[key] is bool:
 				_fail("%s must be boolean." % key)
 				return false
 	return true
 
 
-func _setup_default_lanterns(sim) -> void:
-	for i in range(5):
-		var angle: float = TAU * float(i) / 5.0
-		sim.game_state.lanterns.append({
-			"id": "L%d" % (i + 1),
-			"pos": Vector3(cos(angle) * DEFAULT_LANTERN_RADIUS, 0.0, sin(angle) * DEFAULT_LANTERN_RADIUS),
-			"deposited": 0,
-			"lit": false
-		})
+func _circle(center: Vector3, radius: float, count: int, start_deg: float = 0.0, y: float = 0.0) -> Array:
+	var result: Array = []
+	for i in range(count):
+		var angle := deg_to_rad(start_deg + 360.0 * float(i) / count)
+		result.append(Vector3(center.x + cos(angle) * radius, y, center.z + sin(angle) * radius))
+	return result
 
 
-
-
-func _setup_default_entities(sim) -> void:
-	var positions: Array[Vector3] = [
-		Vector3(0,0,5), Vector3(7,0,3), Vector3(-7,0,4),
-		Vector3(11,0,11), Vector3(-12,0,10), Vector3(3,0,-9),
-		Vector3(-5,0,-13), Vector3(15,0,-4), Vector3(-16,0,-3),
-		Vector3(0,0,16), Vector3(8,0,-15), Vector3(-10,0,-16),
-		Vector3(17,0,8), Vector3(-18,0,7), Vector3(4,0,21),
-		Vector3(5,0,13), Vector3(-8,0,17), Vector3(13,0,-11),
-		Vector3(-14,0,-12), Vector3(20,0,1), Vector3(-21,0,0),
-		Vector3(2,0,-20), Vector3(20,0,13), Vector3(-20,0,14),
-		Vector3(10,0,21)
-	]
-	for i in range(positions.size()):
-		sim.game_state.motes.append({"id":"M%d" % (i+1), "pos":positions[i]})
-	sim.game_state.shades = [
-		{"id":"S1", "pos":Vector3(24,0,4), "state":"chase", "stun_ticks":0},
-		{"id":"S2", "pos":Vector3(-23,0,-7), "state":"chase", "stun_ticks":0}
-	]
+func _setup_world(sim, night: int) -> void:
+	var lantern_positions: Array = []
+	var mote_points: Array = []
+	var shade_points: Array = []
+	if night == 1:
+		lantern_positions = [Vector3(0,0,25), Vector3(23.8,0,7.7), Vector3(14.7,0,-20.2), Vector3(-14.7,0,-20.2), Vector3(-23.8,0,7.7)]
+		mote_points = _circle(Vector3.ZERO, 12, 8) + _circle(Vector3.ZERO, 33, 16)
+		shade_points = _circle(Vector3.ZERO, 37, 12, 15)
+	elif night == 2:
+		lantern_positions = [Vector3(0,0,20), Vector3(17,0,-10), Vector3(-17,0,-10), Vector3(70,0,20), Vector3(87,0,-10), Vector3(53,0,-10)]
+		mote_points = _circle(Vector3.ZERO, 10, 4) + _circle(Vector3.ZERO, 22, 8) + _circle(Vector3(70,0,0), 10, 4) + _circle(Vector3(70,0,0), 22, 8)
+		shade_points = _circle(Vector3.ZERO, 26, 8, 22.5) + _circle(Vector3(70,0,0), 26, 8, 22.5)
+		sim.game_state.charms = [{"id":"C1", "pos":Vector3(35,0,0), "available":true, "respawn_ticks":0}]
+	else:
+		lantern_positions = [Vector3(0,6,6), Vector3(18,3,10), Vector3(-18,3,10), Vector3(35,0,-10), Vector3(-35,0,-10), Vector3(20,0,-35), Vector3(-20,0,-35)]
+		mote_points = _circle(Vector3.ZERO, 34, 18) + _circle(Vector3.ZERO, 18, 8, 20, 3) + _circle(Vector3.ZERO, 5, 4, 45, 6)
+		shade_points = _circle(Vector3.ZERO, 43, 16, 22.5)
+		sim.game_state.charms = [{"id":"C1", "pos":Vector3(30,0,25), "available":true, "respawn_ticks":0}, {"id":"C2", "pos":Vector3(-30,0,25), "available":true, "respawn_ticks":0}]
+	for i in range(lantern_positions.size()):
+		sim.game_state.lanterns.append({"id":"L%d" % (i + 1), "pos":lantern_positions[i], "deposited":0, "lit":false})
+	sim.game_state.mote_spawn_points = mote_points
+	sim.game_state.shade_spawn_points = shade_points
+	for i in range(mini(20, mote_points.size())):
+		sim.game_state.motes.append({"id":"M%d" % (i + 1), "pos":mote_points[i], "kind":"random", "ttl_ticks":-1, "born_tick":-1})
+	sim.next_mote_id = 21
 
 func _vector_from_array(value: Variant, field_name: String) -> Variant:
 	if not value is Array or value.size() != 3:
@@ -273,7 +273,7 @@ func _vector_from_array(value: Variant, field_name: String) -> Variant:
 
 func _apply_scenario(sim, scenario: Dictionary) -> bool:
 	for key in scenario.keys():
-		if key not in ["player", "time_left_s", "random_motes", "random_shades", "motes", "shades", "lanterns"]:
+		if key not in ["player", "time_left_s", "random_motes", "random_shades", "random_drifters", "wind_enabled", "motes", "shades", "lanterns", "drifters", "charms"]:
 			_fail("Unknown scenario field: " + str(key))
 			return false
 
@@ -283,7 +283,7 @@ func _apply_scenario(sim, scenario: Dictionary) -> bool:
 			_fail("scenario.player must be an object.")
 			return false
 		for key in player.keys():
-			if key not in ["pos", "carried", "flames"]:
+			if key not in ["pos", "carried", "flames", "invuln_ticks", "dash_cd_ticks", "pulse_cd_ticks", "charm_ticks"]:
 				_fail("Unknown player field: " + str(key))
 				return false
 		if player.has("pos"):
@@ -293,8 +293,8 @@ func _apply_scenario(sim, scenario: Dictionary) -> bool:
 			sim.game_state.player_pos = player_pos
 		if player.has("carried"):
 			var carried: Variant = player["carried"]
-			if not _is_integer(carried) or float(carried) < 0.0 or int(carried) > 5:
-				_fail("player.carried must be an integer between 0 and carry_capacity (5).")
+			if not _is_integer(carried) or float(carried) < 0.0 or int(carried) > 10:
+				_fail("player.carried must be an integer between 0 and carry_capacity (10).")
 				return false
 			sim.game_state.carried = int(carried)
 		if player.has("flames"):
@@ -303,6 +303,12 @@ func _apply_scenario(sim, scenario: Dictionary) -> bool:
 				_fail("player.flames must be a non-negative integer.")
 				return false
 			sim.game_state.flames = int(flames)
+		for timer_key in ["invuln_ticks", "dash_cd_ticks", "pulse_cd_ticks", "charm_ticks"]:
+			if player.has(timer_key):
+				if not _is_integer(player[timer_key]) or int(player[timer_key]) < 0:
+					_fail("player.%s must be a non-negative integer." % timer_key)
+					return false
+				sim.game_state.set(timer_key, int(player[timer_key]))
 
 	if scenario.has("time_left_s"):
 		var time_value: Variant = scenario["time_left_s"]
@@ -312,10 +318,18 @@ func _apply_scenario(sim, scenario: Dictionary) -> bool:
 		sim.game_state.initial_time_left_s = float(time_value)
 		sim.game_state.time_left_s = sim.game_state.initial_time_left_s
 
-	for boolean_field in ["random_motes", "random_shades"]:
+	for boolean_field in ["random_motes", "random_shades", "random_drifters", "wind_enabled"]:
 		if scenario.has(boolean_field) and not scenario[boolean_field] is bool:
 			_fail("%s must be boolean." % boolean_field)
 			return false
+	if scenario.has("wind_enabled"):
+		sim.game_state.wind["enabled"] = bool(scenario["wind_enabled"])
+	if scenario.has("random_motes"):
+		sim.game_state.random_motes = bool(scenario["random_motes"])
+	if scenario.has("random_shades"):
+		sim.game_state.random_shades = bool(scenario["random_shades"])
+	if scenario.has("random_drifters"):
+		sim.game_state.random_drifters = bool(scenario["random_drifters"])
 
 	if scenario.has("motes"):
 		if not scenario["motes"] is Array:
@@ -326,7 +340,7 @@ func _apply_scenario(sim, scenario: Dictionary) -> bool:
 			var mote_pos: Variant = _vector_from_array(scenario["motes"][i], "motes[%d]" % i)
 			if mote_pos == null:
 				return false
-			sim.game_state.motes.append({"id": "M%d" % (i + 1), "pos": mote_pos})
+			sim.game_state.motes.append({"id": "M%d" % (i + 1), "pos": mote_pos, "kind":"random", "ttl_ticks":-1, "born_tick":-1})
 
 	if scenario.has("shades"):
 		if not scenario["shades"] is Array:
@@ -340,7 +354,7 @@ func _apply_scenario(sim, scenario: Dictionary) -> bool:
 				_fail("Each shade must be an object with pos.")
 				return false
 			for key in shade.keys():
-				if key not in ["id", "pos"]:
+				if key not in ["id", "pos", "state", "state_ticks_left"]:
 					_fail("Unknown shade field: " + str(key))
 					return false
 			var shade_pos: Variant = _vector_from_array(shade["pos"], "shades[%d].pos" % i)
@@ -351,11 +365,50 @@ func _apply_scenario(sim, scenario: Dictionary) -> bool:
 				_fail("Duplicate shade id: " + shade_id)
 				return false
 			shade_ids[shade_id] = true
+			var shade_state := str(shade.get("state", "wander"))
+			if shade_state not in ["spawning", "wander", "chase", "recoil", "stunned"]:
+				_fail("Invalid shade state: " + shade_state)
+				return false
 			sim.game_state.shades.append({
 				"id": shade_id,
 				"pos": shade_pos,
-				"state": "chase"
+				"state": shade_state,
+				"state_ticks_left": int(shade.get("state_ticks_left", 0))
 			})
+
+	if scenario.has("drifters"):
+		if not scenario["drifters"] is Array:
+			_fail("drifters must be an array.")
+			return false
+		sim.game_state.drifters.clear()
+		for i in range(scenario["drifters"].size()):
+			var drifter: Variant = scenario["drifters"][i]
+			if not drifter is Dictionary or not drifter.has("pos"):
+				_fail("Each drifter must be an object with pos.")
+				return false
+			var drifter_pos: Variant = _vector_from_array(drifter["pos"], "drifters[%d].pos" % i)
+			if drifter_pos == null:
+				return false
+			var drifter_state := str(drifter.get("state", "idle"))
+			if drifter_state not in ["idle", "chase", "flee", "removed"]:
+				_fail("Invalid drifter state: " + drifter_state)
+				return false
+			sim.game_state.drifters.append({"id":str(drifter.get("id", "D%d" % (i + 1))), "pos":drifter_pos, "state":drifter_state, "state_ticks_left":int(drifter.get("state_ticks_left", 0)), "stolen":int(drifter.get("stolen", 0))})
+
+	if scenario.has("charms"):
+		if not scenario["charms"] is Array:
+			_fail("charms must be an array.")
+			return false
+		sim.game_state.charms.clear()
+		for i in range(scenario["charms"].size()):
+			var charm: Variant = scenario["charms"][i]
+			if not charm is Dictionary or not charm.has("id"):
+				_fail("Each charm must be an object with id.")
+				return false
+			var charm_pos: Variant = _vector_from_array(charm.get("pos", [0,0,0]), "charms[%d].pos" % i)
+			if charm_pos == null:
+				return false
+			sim.game_state.charms.append({"id":str(charm["id"]), "pos":charm_pos, "available":bool(charm.get("available", true)), "respawn_ticks":int(charm.get("respawn_ticks", 0))})
 
 	if scenario.has("lanterns"):
 		if not scenario["lanterns"] is Array:
@@ -387,8 +440,8 @@ func _apply_scenario(sim, scenario: Dictionary) -> bool:
 					lantern["pos"] = lantern_pos
 				if override.has("deposited"):
 					var deposited: Variant = override["deposited"]
-					if not _is_integer(deposited) or float(deposited) < 0.0 or int(deposited) > 5:
-						_fail("lantern.deposited must be an integer between 0 and lantern_cost (5).")
+					if not _is_integer(deposited) or float(deposited) < 0.0 or int(deposited) > 10:
+						_fail("lantern.deposited must be an integer between 0 and lantern_cost (10).")
 						return false
 					lantern["deposited"] = int(deposited)
 				if override.has("lit"):
@@ -445,21 +498,42 @@ func _write_snapshot(output: FileAccess, sim) -> void:
 			"pos": _vec_array(shade["pos"]),
 			"state": str(shade.get("state", "chase"))
 		})
+	var motes: Array = []
+	for mote in state.motes:
+		var ttl_ticks: int = int(mote.get("ttl_ticks", -1))
+		motes.append({"id":str(mote["id"]), "pos":_vec_array(mote["pos"]), "kind":str(mote.get("kind", "random")), "ttl_s":-1.0 if ttl_ticks < 0 else snappedf(ttl_ticks / 60.0, 0.001)})
+	var drifters: Array = []
+	for drifter in state.drifters:
+		drifters.append({"id":str(drifter["id"]), "pos":_vec_array(drifter["pos"]), "state":str(drifter.get("state", "idle")), "stolen":int(drifter.get("stolen", 0))})
+	var charms: Array = []
+	for charm in state.charms:
+		charms.append({"id":str(charm["id"]), "available":bool(charm.get("available", true)), "respawn_s":float(charm.get("respawn_ticks", 0)) / 60.0})
 	output.store_line(JSON.stringify({
 		"type": "snapshot",
-		"tick": state.sim_tick,
+		"tick": state.wall_tick,
 		"sim_tick": state.sim_tick,
-		"state": state.state,
+		"night": state.night,
+		"state": "paused" if state.paused else state.state,
 		"time_left_s": snappedf(state.time_left_s, 0.001),
 		"score": state.score,
 		"player": {
 			"pos": _vec_array(state.player_pos),
+			"vel": _vec_array(state.player_vel),
+			"grounded": state.grounded,
 			"flames": state.flames,
-			"carried": state.carried
+			"carried": state.carried,
+			"invuln": state.invuln_ticks,
+			"dash_cd_s": snappedf(state.dash_cd_ticks / 60.0, 0.001),
+			"pulse_cd_s": snappedf(state.pulse_cd_ticks / 60.0, 0.001),
+			"charm_s": snappedf(state.charm_ticks / 60.0, 0.001)
 		},
 		"lanterns": lanterns,
 		"shades": shades,
-		"motes_active": state.motes.size()
+		"motes_active": state.motes.size(),
+		"motes": motes,
+		"drifters": drifters,
+		"charms": charms,
+		"wind": {"active":bool(state.wind.get("active", false)), "dir_deg":float(state.wind.get("dir_deg", 0.0))}
 	}))
 
 

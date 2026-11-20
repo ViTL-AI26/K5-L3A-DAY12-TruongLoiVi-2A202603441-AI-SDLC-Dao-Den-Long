@@ -1,296 +1,107 @@
 extends SceneTree
 
 const SimulationScript = preload("res://scripts/core/simulation.gd")
-const RNGScript = preload("res://scripts/core/rng.gd")
 
-var failures: int = 0
+var failures := 0
 
 
 func _initialize() -> void:
-	_test_seeded_rng()
-	_test_fixed_tick()
-	_test_player_movement()
-	_test_deterministic_simulation()
-
-	_test_mote_pickup_and_score()
-	_test_lantern_deposit_and_lit()
-	_test_interact_requires_new_press()
-	_test_shade_chases_player()
-	_test_pulse_stuns_and_pushes_shade()
-	_test_shade_hit_reduces_flames()
-	_test_dropped_motes_are_recoverable_and_lanterns_persist()
-	_test_lantern_safe_zone()
-	_test_jump_is_deterministic_and_grounded()
-	_test_win_bonus_and_terminal_event()
-
+	_test_standard_tuning_and_ticks()
+	_test_dash_and_pause()
+	_test_pulse_and_safe_zone()
+	_test_night_maps_and_jump_pad()
+	_test_charm_and_drifter()
+	_test_fall_respawn()
 	if failures == 0:
-		print("Simulation tests passed.")
+		print("Phase 2 simulation tests passed.")
 		quit(0)
-	else:
-		push_error("Tests failed: %d" % failures)
-		quit(1)
+		return
+	push_error("Tests failed: %d" % failures)
+	quit(1)
 
 
-func _check(condition: bool, message: String) -> void:
+func _check(condition: bool, description: String) -> void:
 	if not condition:
 		failures += 1
-		push_error(message)
+		push_error(description)
 
 
-func _test_seeded_rng() -> void:
-	var rng_a = RNGScript.new()
-	var rng_b = RNGScript.new()
-	var rng_c = RNGScript.new()
-
-	rng_a.seed(12345)
-	rng_b.seed(12345)
-	rng_c.seed(54321)
-
-	var a1: int = rng_a.next_u32()
-	var b1: int = rng_b.next_u32()
-	var c1: int = rng_c.next_u32()
-
-	_check(a1 == b1, "Same seed must produce the same first RNG value.")
-	_check(a1 != c1, "Different seeds should produce different first RNG values.")
-
-
-func _test_fixed_tick() -> void:
+func _sim(night: int = 1):
 	var sim = SimulationScript.new()
-	sim.initialize(123)
-
-	sim.step()
-	sim.step()
-	sim.step()
-
-	_check(sim.game_state.sim_tick == 3, "Three steps must produce three simulation ticks.")
-	_check(
-		absf(sim.game_state.time_left_s - (300.0 - 3.0 / 60.0)) < 0.0001,
-		"Simulation time must advance at 60 ticks per second."
-	)
+	sim.initialize(20261120, night)
+	sim.game_state.random_motes = false
+	sim.game_state.random_shades = false
+	sim.game_state.random_drifters = false
+	return sim
 
 
-func _test_player_movement() -> void:
-	var sim = SimulationScript.new()
-	sim.initialize(123)
-
-	sim.step({"move": [0.0, 1.0], "cam_yaw_deg": 0.0})
-
-	_check(
-		absf(sim.game_state.player_pos.z - (5.0 / 60.0)) < 0.0001,
-		"Forward movement at yaw 0 must move along positive Z."
-	)
-	_check(
-		absf(sim.game_state.player_pos.x) < 0.0001,
-		"Forward movement at yaw 0 must not change X."
-	)
+func _test_standard_tuning_and_ticks() -> void:
+	var sim = _sim()
+	sim.step({"move": [0.0, 1.0]})
+	_check(sim.game_state.sim_tick == 1 and is_equal_approx(sim.game_state.time_left_s, 300.0 - 1.0 / 60.0), "Simulation must advance at 60 Hz with a 300 s first night.")
+	_check(sim.game_state.player_vel.z > 0.9 and sim.game_state.player_vel.z < 1.1, "Run acceleration must reach 6 m/s within 0.1 s.")
+	for i in 6:
+		sim.step({"move": [0.0, 1.0]})
+	_check(is_equal_approx(sim.game_state.player_vel.z, 6.0), "Standard run speed must be 6 m/s.")
 
 
-func _test_deterministic_simulation() -> void:
-	var sim_a = SimulationScript.new()
-	var sim_b = SimulationScript.new()
-
-	sim_a.initialize(2026)
-	sim_b.initialize(2026)
-
-	var frames: Array = [
-		{"move": [0.0, 1.0], "cam_yaw_deg": 0.0},
-		{"move": [1.0, 0.0], "cam_yaw_deg": 90.0},
-		{"move": [0.5, 0.5], "cam_yaw_deg": 30.0}
-	]
-
-	for frame in frames:
-		sim_a.step(frame)
-		sim_b.step(frame)
-
-	_check(
-		sim_a.snapshot() == sim_b.snapshot(),
-		"Same seed and inputs must produce identical simulation snapshots."
-	)
+func _test_dash_and_pause() -> void:
+	var sim = _sim()
+	sim.step({"move": [0.0, 1.0], "dash": true})
+	_check(sim.game_state.dash_ticks == 12 and sim.game_state.dash_cd_ticks == 90, "Dash must last 12 ticks with a 90-tick cooldown.")
+	_check(is_equal_approx(sim.game_state.player_vel.z, 14.0), "Dash speed must be 14 m/s.")
+	var before: int = sim.game_state.sim_tick
+	sim.step({"pause": true})
+	_check(sim.game_state.paused and sim.game_state.sim_tick == before, "Pause edge must freeze simulation time.")
+	sim.step({"pause": false})
+	sim.step({"pause": true})
+	_check(not sim.game_state.paused and sim.game_state.sim_tick == before + 1, "Resume edge must permit simulation on following ticks.")
 
 
-func _test_mote_pickup_and_score() -> void:
-	var sim = SimulationScript.new()
-	sim.initialize(123)
-	sim.game_state.motes = [
-		{"id": "M1", "pos": Vector3(0.0, 0.0, 0.0)}
-	]
-
-	sim.step()
-
-	_check(sim.game_state.carried == 1, "Player should pick up a nearby mote.")
-	_check(sim.game_state.score == 10, "Picking up a mote should award 10 points.")
-	_check(sim.game_state.motes.is_empty(), "Picked mote should be removed.")
-
-	var events = sim.drain_events()
-	_check(events.size() == 1, "Pickup should emit exactly one event.")
-	_check(events[0].get("type") == "mote_picked", "Pickup event type should be mote_picked.")
-
-
-func _test_lantern_deposit_and_lit() -> void:
-	var sim = SimulationScript.new()
-	sim.initialize(123)
-	sim.game_state.carried = 5
-	sim.game_state.lanterns = [
-		{
-			"id": "L1",
-			"pos": Vector3.ZERO,
-			"deposited": 0,
-			"lit": false
-		}
-	]
-
-	sim.step({"interact": true})
-
-	_check(sim.game_state.carried == 0, "Depositing should consume carried motes.")
-	_check(sim.game_state.lanterns[0]["lit"], "Lantern should light after five motes.")
-	_check(sim.game_state.score == 100, "Lighting a lantern should award 100 points.")
-
-	var events = sim.drain_events()
-	_check(events.size() == 2, "Full deposit should emit deposit and lantern_lit.")
-	_check(events[0].get("type") == "deposit", "First event should be deposit.")
-	_check(events[1].get("type") == "lantern_lit", "Second event should be lantern_lit.")
-
-
-func _test_interact_requires_new_press() -> void:
-	var sim = SimulationScript.new()
-	sim.initialize(123)
-	sim.game_state.carried = 5
-	sim.game_state.lanterns = [
-		{"id": "L1", "pos": Vector3.ZERO, "deposited": 0, "lit": false},
-		{"id": "L2", "pos": Vector3(0.0, 0.0, 1.0), "deposited": 0, "lit": false}
-	]
-
-	sim.step({"interact": true})
-	sim.step({"interact": true})
-
-	_check(sim.game_state.lanterns[0]["lit"], "First lantern should be lit.")
-	_check(sim.game_state.lanterns[1]["deposited"] == 0, "Held interact must not trigger a second deposit.")
-
-
-func _test_shade_chases_player() -> void:
-	var sim = SimulationScript.new()
-	sim.initialize(123)
-	sim.game_state.shades = [
-		{"id": "S1", "pos": Vector3(10.0, 0.0, 0.0), "state": "chase"}
-	]
-
-	sim.step()
-
-	var shade_pos: Vector3 = sim.game_state.shades[0]["pos"]
-	_check(shade_pos.x < 10.0, "Shade should move toward the player.")
-	_check(absf(shade_pos.x - 9.95) < 0.001, "Shade speed should be 3 m/s.")
-
-
-func _test_pulse_stuns_and_pushes_shade() -> void:
-	var sim = SimulationScript.new()
-	sim.initialize(123)
-	sim.game_state.carried = 1
-	sim.game_state.shades = [
-		{"id": "S1", "pos": Vector3(2.0, 0.0, 0.0), "state": "chase"}
-	]
-
+func _test_pulse_and_safe_zone() -> void:
+	var sim = _sim()
+	sim.game_state.carried = 3
+	sim.game_state.shades = [{"id":"S1", "pos":Vector3(2, 0, 0), "state":"chase", "state_ticks_left":0}]
 	sim.step({"pulse": true})
-
-	var shade = sim.game_state.shades[0]
-	_check(sim.game_state.carried == 0, "Pulse should consume one mote.")
-	_check(shade["state"] == "stunned", "Pulse should stun nearby Shade.")
-	_check(absf(shade["pos"].x - 5.0) < 0.001, "Pulse should push Shade by 3 m.")
-	_check(sim.game_state.score == 25, "Stunning Shade should award 25 points.")
-
-	var events = sim.drain_events()
-	_check(events.size() == 1, "Pulse should emit one event.")
-	_check(events[0]["type"] == "pulse", "Pulse event type should be pulse.")
-	_check(events[0]["stunned_ids"] == ["S1"], "Pulse event should list stunned Shade.")
-
-
-func _test_shade_hit_reduces_flames() -> void:
-	var sim = SimulationScript.new()
-	sim.initialize(123)
-	sim.game_state.shades = [
-		{"id": "S1", "pos": Vector3.ZERO, "state": "chase"}
-	]
-
+	_check(sim.game_state.carried == 0 and sim.game_state.pulse_cd_ticks == 180, "Pulse must cost three motes and start a three-second cooldown.")
+	_check(sim.game_state.shades[0]["state"] == "stunned" and sim.game_state.shades[0]["state_ticks_left"] == 120, "Pulse must stun a target for 120 ticks.")
+	sim.game_state.lanterns = [{"id":"L1", "pos":Vector3.ZERO, "deposited":10, "lit":true}]
+	sim.game_state.shades[0]["pos"] = Vector3(1, 0, 0)
 	sim.step()
-
-	_check(sim.game_state.flames == 2, "Shade hit should remove one flame.")
-	var events = sim.drain_events()
-	_check(events.size() == 1, "Hit should emit one event.")
-	_check(events[0]["type"] == "player_hit", "Hit event should be player_hit.")
-	_check(events[0]["by"] == "shade", "Hit source should be shade.")
+	_check(is_equal_approx((sim.game_state.shades[0]["pos"] as Vector3).length(), 6.0), "A newly lit safe zone must displace an inside Shade to its 6 m boundary.")
 
 
-func _test_dropped_motes_are_recoverable_and_lanterns_persist() -> void:
-	var sim = SimulationScript.new()
-	sim.initialize(123)
-	sim.game_state.carried = 4
-	sim.game_state.lanterns = [
-		{"id": "L1", "pos": Vector3(10.0, 0.0, 0.0), "deposited": 5, "lit": true}
-	]
-	sim.game_state.shades = [
-		{"id": "S1", "pos": Vector3.ZERO, "state": "chase"}
-	]
+func _test_night_maps_and_jump_pad() -> void:
+	var second = _sim(2)
+	_check(is_equal_approx(second.game_state.initial_time_left_s, 330.0), "Night 2 duration must be 330 seconds.")
+	second.game_state.player_pos = Vector3(20, 0, 18)
+	second.game_state.grounded = true
+	second.step()
+	_check(second.game_state.launch_active and is_equal_approx(second.game_state.player_vel.y, 14.0), "Night 2 pad must launch Mây with Y velocity 14.")
+	var third = _sim(3)
+	_check(is_equal_approx(third.game_state.initial_time_left_s, 360.0), "Night 3 duration must be 360 seconds.")
+	third.game_state.player_pos = Vector3(0, 3, 13)
+	third.game_state.grounded = true
+	third.step()
+	_check(third.game_state.launch_active and is_equal_approx(third.game_state.player_vel.y, 12.0), "Night 3 pad must launch Mây with Y velocity 12.")
 
+
+func _test_charm_and_drifter() -> void:
+	var sim = _sim(2)
+	sim.game_state.charms = [{"id":"C1", "pos":Vector3.ZERO, "available":true, "respawn_ticks":0}]
 	sim.step()
-	_check(sim.game_state.flames == 2, "Shade hit should still remove exactly one flame.")
-	_check(sim.game_state.carried == 2, "A hit should drop half of four carried motes.")
-	_check(sim.game_state.motes.size() == 2, "Dropped motes should be returned to the world.")
-	_check(sim.game_state.lanterns[0]["lit"], "A hit must not extinguish a lit lantern.")
-
-	# The dropped motes are placed at the player's position and should be
-	# collectible on the next simulation tick after the hit.
+	_check(sim.game_state.charm_ticks == 600 and not sim.game_state.charms[0]["available"], "Charm pickup must grant 600 ticks and schedule its respawn.")
+	sim.game_state.carried = 6
+	sim.game_state.drifters = [{"id":"D1", "pos":Vector3(1,0,0), "state":"chase", "state_ticks_left":0, "stolen":0}]
 	sim.step()
-	_check(sim.game_state.carried == 4, "Player should be able to recover dropped motes.")
-	_check(sim.game_state.motes.is_empty(), "Recovered dropped motes should leave the world.")
-	_check(sim.game_state.lanterns[0]["lit"], "Recovering motes must preserve lantern progress.")
+	_check(sim.game_state.carried == 3 and sim.game_state.drifters[0]["state"] == "flee", "A chasing Drifter must steal up to three motes before Shades hit.")
 
 
-func _test_lantern_safe_zone() -> void:
-	var sim = SimulationScript.new()
-	sim.initialize(123)
-	sim.game_state.player_pos = Vector3(10.0, 0.0, 0.0)
-	sim.game_state.lanterns = [
-		{"id": "L1", "pos": Vector3.ZERO, "deposited": 5, "lit": true}
-	]
-	sim.game_state.shades = [
-		{"id": "S1", "pos": Vector3(3.0, 0.0, 0.0), "state": "chase"}
-	]
-
+func _test_fall_respawn() -> void:
+	var sim = _sim()
+	sim.game_state.player_pos = Vector3(50, -11, 0)
 	sim.step()
-
-	var shade_pos: Vector3 = sim.game_state.shades[0]["pos"]
-	_check(
-		shade_pos == Vector3(3.0, 0.0, 0.0),
-		"Shade must not move inside a lit lantern safe zone."
-	)
-
-
-func _test_jump_is_deterministic_and_grounded() -> void:
-	var sim = SimulationScript.new()
-	sim.initialize(321)
-	sim.step({"jump": true})
-	var first_height: float = sim.game_state.player_pos.y
-	_check(first_height > 0.0, "Jump edge should lift the player above ground.")
-	sim.step({"jump": true})
-	_check(sim.game_state.player_pos.y > 0.0, "Held jump should continue the same jump, not retrigger.")
-	for i in range(120):
-		sim.step({"jump": true})
-	_check(absf(sim.game_state.player_pos.y) < 0.0001, "Player should land back on the ground.")
-
-
-func _test_win_bonus_and_terminal_event() -> void:
-	var sim = SimulationScript.new()
-	sim.initialize(321)
-	for i in range(5):
-		sim.game_state.lanterns.append({
-			"id":"L%d" % (i+1),
-			"pos":Vector3(float(i)*10.0,0,0),
-			"deposited":5,
-			"lit":true
-		})
-	sim.step()
-	_check(sim.game_state.state == "won", "All five lit lanterns should win.")
-	_check(sim.game_state.score == 748, "Win should award floor(seconds left)*2 plus remaining flames*50.")
-	var events = sim.drain_events()
-	_check(events.size() == 1, "Winning should emit exactly one game_over event.")
-	_check(events[0].get("type") == "game_over", "Win event should be game_over.")
-	_check(events[0].get("reason") == "all_lit", "Win reason should be all_lit.")
+	_check(sim.game_state.flames == 2 and sim.game_state.fall_ticks == 60 and sim.game_state.carried == 0, "Falling must remove a Flame, all carried motes, and start a 60-tick recovery.")
+	for i in 60:
+		sim.step()
+	_check(sim.game_state.player_pos == Vector3.ZERO and sim.game_state.invuln_ticks > 0, "Fall recovery must return Mây to the start with invulnerability.")

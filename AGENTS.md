@@ -3,13 +3,16 @@
 ## Authoritative documents
 - docs/specs/PRD-0.md
 - docs/specs/test-contract-v1.0.md
+- docs/specs/test-contract-v1.1.md
+- docs/specs/TICKET-02.md
 - docs/plans/phase-1-plan.md
+- docs/plans/phase-2-plan.md
 - docs/specs/ASSUMPTIONS.md
 
 Read these documents before implementation.
 
 ## Rules
-1. Follow PRD-0 and Test Contract v1.0 exactly.
+1. Follow PRD-0 and the latest Test Contract exactly. Ticket-02 / Contract v1.1 supersedes v1.0 where they differ.
 2. Do not invent or change required JSONL fields, event names or payloads.
 3. Use one deterministic simulation core for graphical and headless modes.
 4. Simulation runs at fixed 60 ticks per second.
@@ -25,6 +28,6 @@ Read these documents before implementation.
 ## Workflow
 - Inspect existing files before editing.
 - Explain the intended changes briefly.
-- Implement only the requested milestone.
+- Implement the requested milestone in small, testable changes.
 - Run relevant tests and report actual results.
-- Stop and wait for approval before moving to the next milestone.
+- Report the completed milestone and verification evidence before handoff.

@@ -1,364 +1,522 @@
 extends RefCounted
 class_name SimulationCore
 
-const TICK_RATE: int = 60
-const PLAYER_SPEED: float = 5.0
-const NIGHT_DURATION_S: float = 300.0
-const PICKUP_RADIUS: float = 1.5
-const INTERACT_RADIUS: float = 2.5
-const CARRY_CAPACITY: int = 5
-const LANTERN_COST: int = 5
-const PULSE_COST: int = 1
-const PULSE_RADIUS: float = 5.0
-const PULSE_STUN_TICKS: int = 180
-const PULSE_PUSH_M: float = 3.0
-const PULSE_COOLDOWN_TICKS: int = 60
-const SHADE_SPEED: float = 3.0
-const SHADE_HIT_RADIUS: float = 1.0
-const SAFE_RADIUS: float = 4.0
-const INVULN_TICKS: int = 60
-const HIT_DROP_RATIO: float = 0.5
-const SCORE_PER_MOTE: int = 10
-const SCORE_PER_LANTERN: int = 100
-const SCORE_PER_STUN: int = 25
-const JUMP_SPEED: float = 7.0
-const GRAVITY: float = 18.0
-
-var tuning: Dictionary = {}
-
+const TICK_RATE := 60.0
 const GameStateScript = preload("res://scripts/core/game_state.gd")
 const RNGScript = preload("res://scripts/core/rng.gd")
 
-# Do not rely on Godot's editor-generated global class cache here.  The
-# headless contract invokes this script directly, before that cache is
-# necessarily available on a clean clone.
+var tuning: Dictionary = {}
 var game_state
 var rng
-
-var events: Array[Dictionary] = []
-
-var _previous_jump: bool = false
-var _previous_interact: bool = false
-var _previous_pulse: bool = false
-var _pulse_cooldown: int = 0
-var _invuln_remaining: int = 0
-var _dropped_mote_id: int = 0
-var _hit_this_step: bool = false
-var _pulse_this_step: bool = false
+var events: Array = []
+var previous: Dictionary = {"jump": false, "interact": false, "pulse": false, "dash": false, "pause": false}
+var next_shade_id := 1
+var next_drifter_id := 1
+var next_dropped_id := 1
+var next_mote_id := 1
 
 
-func initialize(seed_value: int, duration_s: float = -1.0) -> void:
+func initialize(seed_value: int, night_value: int = 1) -> void:
 	tuning = _load_tuning()
 	game_state = GameStateScript.new()
-	game_state.initial_time_left_s = _number("night1_duration_s", NIGHT_DURATION_S) if duration_s < 0.0 else duration_s
+	game_state.night = night_value
+	game_state.initial_time_left_s = _number("night%d_duration_s" % night_value, 300.0)
 	game_state.time_left_s = game_state.initial_time_left_s
-	game_state.flames = int(tuning.get("flames", 3))
-
+	game_state.flames = _integer("flames", 3)
 	rng = RNGScript.new()
 	rng.seed(seed_value)
-
 	events.clear()
-	_previous_jump = false
-	_previous_interact = false
-	_previous_pulse = false
-	_pulse_cooldown = 0
-	_invuln_remaining = 0
-	_dropped_mote_id = 0
-	_hit_this_step = false
-	_pulse_this_step = false
+	previous = {"jump": false, "interact": false, "pulse": false, "dash": false, "pause": false}
+	next_shade_id = 1
+	next_drifter_id = 1
+	next_dropped_id = 1
+	next_mote_id = 1
 
 
 func step(frame: Dictionary = {}) -> void:
 	if game_state == null or game_state.state != "playing":
 		return
-
 	events.clear()
+	game_state.wall_tick += 1
+	var pause_pressed := bool(frame.get("pause", false))
+	var pause_edge := pause_pressed and not bool(previous["pause"])
+	previous["pause"] = pause_pressed
+	if pause_edge:
+		game_state.paused = not game_state.paused
+		_event("paused" if game_state.paused else "resumed", {})
+		if game_state.paused:
+			return
+	if game_state.paused:
+		return
 
-	_hit_this_step = false
-	_pulse_this_step = false
-	_apply_movement(frame)
-	_pickup_motes()
-
-	var interact_pressed: bool = bool(frame.get("interact", false))
-	if interact_pressed and not _previous_interact:
-		_interact_with_lantern()
-	_previous_interact = interact_pressed
-
-	var pulse_pressed: bool = bool(frame.get("pulse", false))
-	if pulse_pressed and not _previous_pulse:
-		_activate_pulse()
-	_previous_pulse = pulse_pressed
-
-	_update_shades()
-	if _pulse_cooldown > 0 and not _pulse_this_step:
-		_pulse_cooldown -= 1
-	if _invuln_remaining > 0 and not _hit_this_step:
-		_invuln_remaining -= 1
-
+	_decrement_timers()
+	_apply_player(frame)
+	if _check_fall():
+		_finalize_step()
+		return
+	_pickup_motes_and_charms()
+	if _edge(frame, "interact"):
+		_interact()
+	_update_safe_zones()
+	if _edge(frame, "pulse"):
+		_pulse()
+	_move_drifters()
+	_move_shades()
+	_resolve_contacts()
 	game_state.sim_tick += 1
-	game_state.time_left_s = maxf(
-		0.0,
-		game_state.initial_time_left_s - float(game_state.sim_tick) / float(TICK_RATE)
-	)
+	game_state.time_left_s = maxf(0.0, game_state.initial_time_left_s - game_state.sim_tick / TICK_RATE)
+	_spawn_scheduled()
 	_evaluate_terminal()
 
 
-func _apply_movement(frame: Dictionary) -> void:
-	var raw_move: Array = frame.get("move", [0.0, 0.0])
-	if raw_move.size() != 2:
+func _finalize_step() -> void:
+	game_state.sim_tick += 1
+	game_state.time_left_s = maxf(0.0, game_state.initial_time_left_s - game_state.sim_tick / TICK_RATE)
+	_evaluate_terminal()
+
+
+func _edge(frame: Dictionary, key: String) -> bool:
+	var held := bool(frame.get(key, false))
+	var edge := held and not bool(previous[key])
+	previous[key] = held
+	return edge
+
+
+func _decrement_timers() -> void:
+	if game_state.fall_ticks > 0:
+		game_state.fall_ticks -= 1
+		if game_state.fall_ticks == 0:
+			game_state.player_pos = Vector3.ZERO
+			game_state.player_vel = Vector3.ZERO
+			game_state.grounded = true
+			game_state.invuln_ticks = 90
+			_event("fall_respawn", {})
+	for key in ["invuln_ticks", "dash_cd_ticks", "pulse_cd_ticks", "dash_ticks", "charm_ticks", "recoil_ticks"]:
+		var value: int = int(game_state.get(key))
+		if value > 0:
+			game_state.set(key, value - 1)
+	for shade in game_state.shades:
+		var left: int = int(shade.get("state_ticks_left", 0))
+		if left > 0:
+			shade["state_ticks_left"] = left - 1
+			if left == 1 and str(shade.get("state", "")) in ["stunned", "recoil"]:
+				shade["state"] = "wander"
+	for drifter in game_state.drifters:
+		var left: int = int(drifter.get("state_ticks_left", 0))
+		if left > 0:
+			drifter["state_ticks_left"] = left - 1
+	for mote in game_state.motes.duplicate():
+		var ttl: int = int(mote.get("ttl_ticks", -1))
+		var born: int = int(mote.get("born_tick", -1))
+		if ttl >= 0 and game_state.sim_tick > born and ttl == 0:
+			game_state.motes.erase(mote)
+		elif ttl > 0 and game_state.sim_tick > born:
+			mote["ttl_ticks"] = ttl - 1
+	for charm in game_state.charms:
+		if not bool(charm.get("available", true)):
+			var respawn: int = int(charm.get("respawn_ticks", 0))
+			if respawn > 0:
+				charm["respawn_ticks"] = respawn - 1
+			elif respawn == 0:
+				charm["available"] = true
+
+
+func _apply_player(frame: Dictionary) -> void:
+	if game_state.fall_ticks > 0:
 		return
+	var raw: Array = frame.get("move", [0.0, 0.0])
+	var input := Vector2(clampf(float(raw[0]), -1.0, 1.0), clampf(float(raw[1]), -1.0, 1.0))
+	if input.length_squared() > 1.0:
+		input = input.normalized()
+	var yaw := deg_to_rad(float(frame.get("cam_yaw_deg", 0.0)))
+	var direction := Vector3(input.x * cos(yaw) + input.y * sin(yaw), 0.0, -input.x * sin(yaw) + input.y * cos(yaw))
+	if direction.length_squared() > 0.0001:
+		game_state.facing = direction.normalized()
+	if _edge(frame, "dash") and game_state.dash_ticks <= 0 and (game_state.dash_cd_ticks <= 0 or game_state.charm_ticks > 0):
+		game_state.dash_ticks = int(round(_number("dash_duration_s", 0.2) * TICK_RATE))
+		if game_state.charm_ticks <= 0:
+			game_state.dash_cd_ticks = int(round(_number("dash_cooldown_s", 1.5) * TICK_RATE))
+		_event("dash", {})
+	if game_state.dash_ticks > 0:
+		game_state.player_vel.x = game_state.facing.x * _number("dash_speed", 14.0)
+		game_state.player_vel.z = game_state.facing.z * _number("dash_speed", 14.0)
+		if not game_state.grounded:
+			game_state.player_vel.y = 0.0
+	elif not game_state.launch_active:
+		var speed := _number("player_speed", 6.0) * (1.2 if game_state.charm_ticks > 0 else 1.0)
+		var target := direction * speed
+		# 6 m/s reached (or stopped) in at most six 60 Hz ticks = 0.1 s.
+		var horizontal_step := speed / 6.0
+		game_state.player_vel.x = move_toward(game_state.player_vel.x, target.x, horizontal_step)
+		game_state.player_vel.z = move_toward(game_state.player_vel.z, target.z, horizontal_step)
+	if _edge(frame, "jump") and game_state.grounded and game_state.dash_ticks <= 0:
+		game_state.player_vel.y = 7.0
+		game_state.grounded = false
+	if not game_state.grounded and game_state.dash_ticks <= 0:
+		game_state.player_vel.y -= _number("gravity", 20.0) / TICK_RATE
+	if game_state.recoil_ticks > 0:
+		game_state.player_pos += game_state.recoil_dir * (2.0 / 60.0)
+	game_state.player_pos += game_state.player_vel / TICK_RATE
+	var floor_y := _ground_height(game_state.player_pos)
+	if floor_y > -INF and game_state.player_vel.y <= 0.0 and game_state.player_pos.y <= floor_y:
+		game_state.player_pos.y = floor_y
+		game_state.player_vel.y = 0.0
+		game_state.grounded = true
+		game_state.launch_active = false
+	else:
+		game_state.grounded = false
+	_check_jump_pad()
+	if game_state.night == 3 and bool(game_state.wind.get("active", false)):
+		var dir := deg_to_rad(float(game_state.wind.get("dir_deg", 0.0)))
+		game_state.player_pos += Vector3(cos(dir), 0.0, sin(dir)) * (2.0 / TICK_RATE)
 
-	var move_input := Vector2(
-		clampf(float(raw_move[0]), -1.0, 1.0),
-		clampf(float(raw_move[1]), -1.0, 1.0)
-	)
 
-	if move_input.length_squared() > 1.0:
-		move_input = move_input.normalized()
-
-	var yaw_rad: float = deg_to_rad(float(frame.get("cam_yaw_deg", 0.0)))
-
-	var world_x: float = (
-		move_input.x * cos(yaw_rad)
-		+ move_input.y * sin(yaw_rad)
-	)
-	var world_z: float = (
-		-move_input.x * sin(yaw_rad)
-		+ move_input.y * cos(yaw_rad)
-	)
-
-	game_state.player_pos += Vector3(world_x, 0.0, world_z) * _number("player_speed", PLAYER_SPEED) / float(TICK_RATE)
-	var jump_pressed := bool(frame.get("jump", false))
-	if jump_pressed and not _previous_jump and game_state.player_pos.y <= 0.0001:
-		game_state.vertical_velocity = JUMP_SPEED
-	_previous_jump = jump_pressed
-	if game_state.player_pos.y > 0.0 or game_state.vertical_velocity > 0.0:
-		game_state.vertical_velocity -= GRAVITY / float(TICK_RATE)
-		game_state.player_pos.y = maxf(0.0, game_state.player_pos.y + game_state.vertical_velocity / float(TICK_RATE))
-		if game_state.player_pos.y <= 0.0:
-			game_state.vertical_velocity = 0.0
+func _ground_height(pos: Vector3) -> float:
+	if game_state.night == 1:
+		return 0.0 if Vector2(pos.x, pos.z).length() <= 40.0 else -INF
+	if game_state.night == 2:
+		var on_a := Vector2(pos.x, pos.z).length() <= 28.0
+		var on_b := Vector2(pos.x - 70.0, pos.z).length() <= 28.0
+		var on_bridge := pos.x >= 26.0 and pos.x <= 44.0 and absf(pos.z) <= 2.0
+		return 0.0 if on_a or on_b or on_bridge else -INF
+	var radial := Vector2(pos.x, pos.z).length()
+	if radial > 45.0:
+		return -INF
+	if pos.y > 4.5 and radial <= 8.0:
+		return 6.0
+	if pos.y > 1.5 and pos.z > 0.0 and radial >= 12.0 and radial <= 24.0:
+		return 3.0
+	return 0.0
 
 
-func _horizontal_distance(a: Vector3, b: Vector3) -> float:
-	var dx: float = a.x - b.x
-	var dz: float = a.z - b.z
-	return sqrt(dx * dx + dz * dz)
-
-
-func _pickup_motes() -> void:
-	if game_state.carried >= _integer("carry_capacity", CARRY_CAPACITY):
+func _check_jump_pad() -> void:
+	if not game_state.grounded:
 		return
+	var pads: Array = []
+	if game_state.night == 2:
+		pads = [{"pos": Vector3(20,0,18), "target": Vector3(70,0,0), "vy": 14.0, "speed": 24.0}, {"pos": Vector3(50,0,-18), "target": Vector3(0,0,0), "vy": 14.0, "speed": 24.0}]
+	elif game_state.night == 3:
+		pads = [{"pos": Vector3(0,3,13), "target": Vector3(0,3,-20), "vy": 12.0, "speed": 8.0}]
+	for pad in pads:
+		if _horizontal_distance(game_state.player_pos, pad["pos"]) <= 1.0 and absf(game_state.player_pos.y - pad["pos"].y) <= 0.2:
+			var launch: Vector3 = pad["target"] - pad["pos"]
+			launch.y = 0.0
+			game_state.player_vel = launch.normalized() * float(pad["speed"])
+			game_state.player_vel.y = float(pad["vy"])
+			game_state.grounded = false
+			game_state.launch_active = true
+			return
 
-	var remaining: Array = []
-	game_state.motes.sort_custom(func(a, b): return str(a.get("id", "")) < str(b.get("id", "")))
 
-	for mote in game_state.motes:
-		var mote_pos: Vector3 = mote.get("pos", Vector3.ZERO)
+func _check_fall() -> bool:
+	if game_state.player_pos.y >= -10.0 or game_state.fall_ticks > 0:
+		return false
+	var lost: bool = game_state.flames <= 1
+	game_state.flames = maxi(0, game_state.flames - 1)
+	game_state.carried = 0
+	_event("player_hit", {"by": "fall", "flames": game_state.flames, "dropped": 0, "lost": lost})
+	if not lost:
+		game_state.fall_ticks = 60
+	return true
 
-		if (
-			game_state.carried < _integer("carry_capacity", CARRY_CAPACITY)
-			and _horizontal_distance(game_state.player_pos, mote_pos) <= _number("pickup_radius", PICKUP_RADIUS)
-		):
+
+func _pickup_motes_and_charms() -> void:
+	if game_state.fall_ticks > 0:
+		return
+	for mote in game_state.motes.duplicate():
+		if game_state.carried >= _integer("carry_capacity", 10):
+			break
+		if game_state.sim_tick <= int(mote.get("born_tick", -1)):
+			continue
+		if _horizontal_distance(game_state.player_pos, mote["pos"]) <= _number("pickup_radius", 1.0) and absf(game_state.player_pos.y - mote["pos"].y) <= 1.5:
 			game_state.carried += 1
-			game_state.score += _integer("score.per_mote", SCORE_PER_MOTE)
-
-			events.append({
-				"type": "mote_picked",
-				"tick": game_state.sim_tick + 1,
-				"carried": game_state.carried
-			})
-		else:
-			remaining.append(mote)
-
-	game_state.motes = remaining
+			game_state.motes.erase(mote)
+			_event("mote_picked", {"carried": game_state.carried})
+	for charm in game_state.charms:
+		if bool(charm.get("available", true)) and _horizontal_distance(game_state.player_pos, charm["pos"]) <= _number("pickup_radius", 1.0):
+			charm["available"] = false
+			charm["respawn_ticks"] = 2700
+			game_state.charm_ticks = 600
+			_event("charm_picked", {"charm_id": charm["id"], "charm_ticks": 600})
 
 
-func _interact_with_lantern() -> void:
+func _interact() -> void:
 	var selected: Dictionary = {}
-	var selected_distance := INF
+	var best := INF
 	for lantern in game_state.lanterns:
 		if bool(lantern.get("lit", false)):
 			continue
-		var lantern_pos: Vector3 = lantern.get("pos", Vector3.ZERO)
-		var distance := _horizontal_distance(game_state.player_pos, lantern_pos)
-		if distance > _number("interact_radius", INTERACT_RADIUS):
-			continue
-		if distance < selected_distance or (
-			is_equal_approx(distance, selected_distance)
-			and (selected.is_empty() or str(lantern.get("id", "")) < str(selected.get("id", "")))
-		):
+		var d := _horizontal_distance(game_state.player_pos, lantern["pos"])
+		if d <= _number("interact_radius", 2.0) and (d < best or (is_equal_approx(d, best) and str(lantern["id"]) < str(selected.get("id", "~")))):
 			selected = lantern
-			selected_distance = distance
+			best = d
 	if selected.is_empty() or game_state.carried <= 0:
 		return
-	var needed: int = maxi(0, _integer("lantern_cost", LANTERN_COST) - int(selected.get("deposited", 0)))
-	var amount: int = mini(game_state.carried, needed)
-	if amount <= 0:
-		return
+	var amount := mini(game_state.carried, _integer("lantern_cost", 10) - int(selected.get("deposited", 0)))
 	game_state.carried -= amount
 	selected["deposited"] = int(selected.get("deposited", 0)) + amount
-	events.append({
-		"type":"deposit", "tick":game_state.sim_tick + 1,
-		"lantern_id":str(selected.get("id", "")),
-		"amount":amount, "deposited":int(selected["deposited"])
-	})
-	if int(selected["deposited"]) >= _integer("lantern_cost", LANTERN_COST):
+	game_state.score += amount * _integer("score.per_mote", 10)
+	_event("deposit", {"lantern_id": selected["id"], "amount": amount, "deposited": selected["deposited"]})
+	if int(selected["deposited"]) >= _integer("lantern_cost", 10):
 		selected["lit"] = true
-		game_state.score += _integer("score.per_lantern", SCORE_PER_LANTERN)
-		events.append({
-			"type":"lantern_lit", "tick":game_state.sim_tick + 1,
-			"lantern_id":str(selected.get("id", ""))
-		})
+		game_state.score += _integer("score.per_lantern", 100)
+		_event("lantern_lit", {"lantern_id": selected["id"]})
 
 
-func _activate_pulse() -> void:
-	if _pulse_cooldown > 0 or game_state.carried < _integer("pulse_cost", PULSE_COST):
-		return
-
-	game_state.carried -= _integer("pulse_cost", PULSE_COST)
-	_pulse_cooldown = int(round(_number("pulse_cooldown_s", 1.0) * TICK_RATE))
-	_pulse_this_step = true
-
-	var stunned_ids: Array[String] = []
-	game_state.shades.sort_custom(func(a, b): return str(a.get("id", "")) < str(b.get("id", "")))
-
+func _update_safe_zones() -> void:
 	for shade in game_state.shades:
-		if str(shade.get("state", "chase")) == "stunned":
+		for lantern in game_state.lanterns:
+			if bool(lantern.get("lit", false)) and _horizontal_distance(shade["pos"], lantern["pos"]) < _number("safe_radius", 6.0):
+				var away: Vector3 = shade["pos"] - lantern["pos"]
+				away.y = 0.0
+				shade["pos"] = lantern["pos"] + (away.normalized() if away.length_squared() > 0.001 else Vector3.RIGHT) * _number("safe_radius", 6.0)
+				shade["state"] = "recoil"
+				shade["state_ticks_left"] = 30
+
+
+func _pulse() -> void:
+	if game_state.pulse_cd_ticks > 0 or game_state.carried < _integer("pulse_cost", 3):
+		return
+	game_state.carried -= _integer("pulse_cost", 3)
+	game_state.pulse_cd_ticks = int(round(_number("pulse_cooldown_s", 3.0) * TICK_RATE))
+	var center: Vector3 = game_state.player_pos + Vector3(0, 0.8, 0)
+	var hit_ids: Array = []
+	for shade in game_state.shades:
+		if _distance3(center, shade["pos"]) <= _number("pulse_radius", 5.0):
+			shade["state"] = "stunned"
+			shade["state_ticks_left"] = int(round(_number("pulse_stun_s", 2.0) * TICK_RATE))
+			shade["push_ticks"] = 15
+			var away: Vector3 = shade["pos"] - game_state.player_pos
+			away.y = 0.0
+			shade["push_dir"] = away.normalized() if away.length_squared() > 0.001 else Vector3.RIGHT
+			hit_ids.append(str(shade["id"]))
+			game_state.score += _integer("score.per_stun", 5)
+	for drifter in game_state.drifters:
+		if _distance3(center, drifter["pos"]) <= _number("pulse_radius", 5.0) and str(drifter.get("state", "")) != "removed":
+			if str(drifter.get("state", "")) == "flee" and int(drifter.get("stolen", 0)) > 0:
+				_drop_stolen(drifter)
+			drifter["state"] = "flee"
+			drifter["state_ticks_left"] = 120
+	hit_ids.sort()
+	_event("pulse", {"stunned_ids": hit_ids})
+
+
+func _move_shades() -> void:
+	for shade in game_state.shades:
+		var state := str(shade.get("state", "wander"))
+		if state == "spawning":
+			shade["state"] = "wander"
 			continue
-
-		var shade_pos: Vector3 = shade.get("pos", Vector3.ZERO)
-		if _horizontal_distance(game_state.player_pos, shade_pos) > _number("pulse_radius", PULSE_RADIUS):
+		if state == "stunned":
+			if int(shade.get("push_ticks", 0)) > 0:
+				shade["pos"] += shade.get("push_dir", Vector3.RIGHT) * (_number("pulse_push_m", 4.0) / 15.0)
+				shade["push_ticks"] = int(shade["push_ticks"]) - 1
 			continue
-
-		var away := Vector3(
-			shade_pos.x - game_state.player_pos.x,
-			0.0,
-			shade_pos.z - game_state.player_pos.z
-		)
-
-		if away.length_squared() < 0.000001:
-			away = Vector3.RIGHT
-		else:
-			away = away.normalized()
-
-		shade["pos"] = shade_pos + away * _number("pulse_push_m", PULSE_PUSH_M)
-		shade["state"] = "stunned"
-		shade["stun_ticks"] = int(round(_number("pulse_stun_s", 3.0) * TICK_RATE))
-		shade["stun_just_applied"] = true
-
-		stunned_ids.append(str(shade.get("id", "")))
-		game_state.score += _integer("score.per_stun", SCORE_PER_STUN)
-
-	events.append({
-		"type": "pulse",
-		"tick": game_state.sim_tick + 1,
-		"stunned_ids": stunned_ids
-	})
+		if state == "recoil":
+			continue
+		var d := _horizontal_distance(shade["pos"], game_state.player_pos)
+		if state == "wander" and d <= _number("shade_detect_radius", 12.0):
+			shade["state"] = "chase"
+		if state == "chase" and d > _number("shade_forget_radius", 18.0):
+			shade["state"] = "wander"
+		if str(shade["state"]) == "chase":
+			var direction: Vector3 = game_state.player_pos - shade["pos"]
+			direction.y = 0.0
+			if direction.length_squared() > 0.001:
+				var speed := 4.5 if game_state.night == 3 else _number("shade_speed", 4.0)
+				var candidate: Vector3 = shade["pos"] + direction.normalized() * speed / TICK_RATE
+				if not _inside_lit_safe_zone(candidate):
+					shade["pos"] = candidate
 
 
-func _is_inside_safe_zone(position: Vector3) -> bool:
+func _move_drifters() -> void:
+	for drifter in game_state.drifters.duplicate():
+		var state := str(drifter.get("state", "idle"))
+		if state == "removed":
+			game_state.drifters.erase(drifter)
+			continue
+		var direction: Vector3 = game_state.player_pos - drifter["pos"]
+		direction.y = 0.0
+		var d := direction.length()
+		if state == "idle" and game_state.carried >= 5 and d <= 15.0:
+			drifter["state"] = "chase"
+			state = "chase"
+		if state == "chase" and (game_state.carried < 5 or d > 15.0):
+			drifter["state"] = "idle"
+			state = "idle"
+		if state == "chase" and d > 0.001:
+			drifter["pos"] += direction.normalized() * 7.0 / TICK_RATE
+		elif state == "flee":
+			if int(drifter.get("state_ticks_left", 0)) <= 0:
+				drifter["state"] = "removed"
+			else:
+				var away := -direction.normalized() if d > 0.001 else Vector3.RIGHT
+				drifter["pos"] += away * 7.0 / TICK_RATE
+
+
+func _resolve_contacts() -> void:
+	for drifter in game_state.drifters:
+		if str(drifter.get("state", "")) == "chase" and _horizontal_distance(drifter["pos"], game_state.player_pos) <= 1.2:
+			var amount := mini(3, game_state.carried)
+			game_state.carried -= amount
+			drifter["stolen"] = amount
+			drifter["state"] = "flee"
+			drifter["state_ticks_left"] = 240
+			_event("drifter_steal", {"drifter_id": drifter["id"], "amount": amount, "carried": game_state.carried})
+	game_state.shades.sort_custom(func(a, b): return str(a["id"]) < str(b["id"]))
+	for shade in game_state.shades:
+		if game_state.invuln_ticks > 0 or game_state.fall_ticks > 0 or str(shade.get("state", "")) not in ["chase", "wander"]:
+			continue
+		if _horizontal_distance(shade["pos"], game_state.player_pos) <= _number("shade_hit_radius", 1.0) and absf(shade["pos"].y - game_state.player_pos.y) <= 1.5:
+			_hit_by_shade(shade)
+			return
+
+
+func _hit_by_shade(shade: Dictionary) -> void:
+	game_state.flames = maxi(0, game_state.flames - 1)
+	game_state.invuln_ticks = int(round(_number("invuln_s", 1.5) * TICK_RATE))
+	game_state.recoil_ticks = 60
+	var away: Vector3 = game_state.player_pos - shade["pos"]
+	away.y = 0.0
+	game_state.recoil_dir = away.normalized() if away.length_squared() > 0.001 else Vector3.RIGHT
+	var dropped := int(floor(game_state.carried / 2.0))
+	game_state.carried -= dropped
+	for i in range(dropped):
+		var angle := TAU * float(i) / maxf(1.0, float(dropped))
+		var radius := 1.5 + float(i % 2)
+		_add_mote(game_state.player_pos + Vector3(cos(angle) * radius, 0, sin(angle) * radius), "dropped", 480)
+	_event("player_hit", {"by": "shade", "flames": game_state.flames, "dropped": dropped, "lost": game_state.flames == 0})
+
+
+func _spawn_scheduled() -> void:
+	if game_state.random_motes and game_state.sim_tick > 0 and game_state.sim_tick % 240 == 0 and game_state.motes.size() < 30:
+		_spawn_mote()
+	var first_spawn := 300
+	var interval := 480 if game_state.night == 1 else (420 if game_state.night == 2 else 360)
+	if game_state.random_shades and game_state.sim_tick == first_spawn:
+		_spawn_shade(2)
+	elif game_state.random_shades and game_state.sim_tick > first_spawn and (game_state.sim_tick - first_spawn) % interval == 0:
+		_spawn_shade(1)
+	if game_state.random_drifters and game_state.night >= 2 and game_state.sim_tick > 0 and game_state.sim_tick % 1200 == 0 and game_state.drifters.size() < 2:
+		_spawn_drifter()
+	if game_state.night == 3 and bool(game_state.wind.get("enabled", true)):
+		var cycle: int = game_state.sim_tick % 1800
+		if cycle == 1680:
+			game_state.wind["dir_deg"] = float(rng.next_u32() % 360)
+		if cycle == 0:
+			game_state.wind["active"] = true
+		elif cycle == 300:
+			game_state.wind["active"] = false
+
+
+func _spawn_mote() -> void:
+	for pos in game_state.mote_spawn_points:
+		var occupied := false
+		for mote in game_state.motes:
+			if _horizontal_distance(pos, mote["pos"]) < 0.1:
+				occupied = true
+				break
+		if not occupied:
+			_add_mote(pos, "random", -1)
+			return
+
+
+func _spawn_shade(count: int) -> void:
+	var cap := 6 if game_state.night == 1 else (8 if game_state.night == 2 else 10)
+	for i in range(count):
+		if game_state.shades.size() >= cap:
+			return
+		for pos in game_state.shade_spawn_points:
+			if _horizontal_distance(pos, game_state.player_pos) >= 15.0:
+				var id := "S%d" % next_shade_id
+				next_shade_id += 1
+				game_state.shades.append({"id": id, "pos": pos, "state": "spawning", "state_ticks_left": 0})
+				_event("shade_spawned", {"id": id})
+				break
+
+
+func _spawn_drifter() -> void:
+	if game_state.shade_spawn_points.is_empty():
+		return
+	var id := "D%d" % next_drifter_id
+	next_drifter_id += 1
+	var pos = game_state.shade_spawn_points[int(rng.next_u32() % game_state.shade_spawn_points.size())]
+	game_state.drifters.append({"id": id, "pos": pos, "state": "idle", "state_ticks_left": 0, "stolen": 0})
+
+
+func _add_mote(pos: Vector3, kind: String, ttl: int) -> void:
+	var id: String
+	if kind == "random":
+		id = "M%d" % next_mote_id
+		next_mote_id += 1
+	else:
+		id = "D%d" % next_dropped_id
+		next_dropped_id += 1
+	game_state.motes.append({"id": id, "pos": pos, "kind": kind, "ttl_ticks": ttl, "born_tick": game_state.sim_tick})
+
+
+func _drop_stolen(drifter: Dictionary) -> void:
+	var amount := int(drifter.get("stolen", 0))
+	for i in range(amount):
+		_add_mote(drifter["pos"], "dropped", 480)
+	drifter["stolen"] = 0
+	_event("drifter_drop", {"drifter_id": drifter["id"], "amount": amount})
+
+
+func _evaluate_terminal() -> void:
+	if game_state.flames <= 0:
+		game_state.state = "lost"
+		_event("game_over", {"result": "lost", "reason": "no_flames"})
+		return
+	var all_lit: bool = not game_state.lanterns.is_empty()
 	for lantern in game_state.lanterns:
 		if not bool(lantern.get("lit", false)):
-			continue
+			all_lit = false
+	if all_lit:
+		game_state.state = "won"
+		game_state.score += int(floor(game_state.time_left_s)) * _integer("score.per_second_left", 2) + game_state.flames * _integer("score.per_flame_left", 50)
+		_event("game_over", {"result": "won", "reason": "all_lit"})
+	elif game_state.time_left_s <= 0.0:
+		game_state.state = "lost"
+		_event("game_over", {"result": "lost", "reason": "dawn"})
 
-		var lantern_pos: Vector3 = lantern.get("pos", Vector3.ZERO)
-		if _horizontal_distance(position, lantern_pos) <= _number("safe_radius", SAFE_RADIUS):
+
+func _event(name: String, data: Dictionary) -> void:
+	var record := {"type": name, "tick": game_state.wall_tick}
+	for key in data:
+		record[key] = data[key]
+	events.append(record)
+
+
+func _horizontal_distance(a: Vector3, b: Vector3) -> float:
+	return Vector2(a.x - b.x, a.z - b.z).length()
+
+
+func _distance3(a: Vector3, b: Vector3) -> float:
+	return a.distance_to(b)
+
+
+func _inside_lit_safe_zone(pos: Vector3) -> bool:
+	for lantern in game_state.lanterns:
+		if bool(lantern.get("lit", false)) and _horizontal_distance(pos, lantern["pos"]) < _number("safe_radius", 6.0):
 			return true
-
 	return false
 
 
-func _update_shades() -> void:
-	game_state.shades.sort_custom(func(a, b): return str(a.get("id", "")) < str(b.get("id", "")))
-	for shade in game_state.shades:
-		var shade_state: String = str(shade.get("state", "chase"))
-
-		if shade_state == "stunned":
-			if bool(shade.get("stun_just_applied", false)):
-				shade["stun_just_applied"] = false
-				continue
-			var stun_ticks: int = int(shade.get("stun_ticks", 0)) - 1
-
-			if stun_ticks <= 0:
-				shade["state"] = "chase"
-				shade["stun_ticks"] = 0
-			else:
-				shade["stun_ticks"] = stun_ticks
-
-			continue
-
-		var shade_pos: Vector3 = shade.get("pos", Vector3.ZERO)
-		var direction := Vector3(
-			game_state.player_pos.x - shade_pos.x,
-			0.0,
-			game_state.player_pos.z - shade_pos.z
-		)
-
-		var distance: float = direction.length()
-
-		if distance > 0.0001:
-			direction = direction.normalized()
-			var movement: Vector3 = direction * _number("shade_speed", SHADE_SPEED) / float(TICK_RATE)
-			var candidate: Vector3 = shade_pos + movement
-
-			if not _is_inside_safe_zone(candidate):
-				shade["pos"] = candidate
-
-		shade_pos = shade.get("pos", Vector3.ZERO)
-
-		if (
-			_invuln_remaining <= 0
-			and _horizontal_distance(shade_pos, game_state.player_pos)
-				<= _number("shade_hit_radius", SHADE_HIT_RADIUS)
-		):
-			_apply_player_hit("shade")
-			if game_state.state != "playing":
-				return
-
-
-func _apply_player_hit(source: String) -> void:
-	if _invuln_remaining > 0:
-		return
-
-	game_state.flames = maxi(0, game_state.flames - 1)
-	_invuln_remaining = int(round(_number("invuln_s", 1.0) * TICK_RATE))
-	_hit_this_step = true
-
-	var dropped: int = int(floor(
-		float(game_state.carried) * _number("hit_drop_ratio", HIT_DROP_RATIO)
-	))
-	game_state.carried -= dropped
-
-	for i in range(dropped):
-		_dropped_mote_id += 1
-		game_state.motes.append({
-			"id": "D%d" % _dropped_mote_id,
-			"pos": game_state.player_pos
-		})
-
-	events.append({
-		"type": "player_hit",
-		"tick": game_state.sim_tick + 1,
-		"by": source,
-		"flames": game_state.flames,
-		"dropped": dropped
-	})
-
-
 func _number(key: String, fallback: float) -> float:
-	return float(_tuning_value(key, fallback))
+	return float(_value(key, fallback))
 
 
 func _integer(key: String, fallback: int) -> int:
-	return int(_tuning_value(key, fallback))
+	return int(_value(key, fallback))
 
 
-func _tuning_value(key: String, fallback: Variant) -> Variant:
+func _value(key: String, fallback: Variant) -> Variant:
 	var value: Variant = tuning
-	for segment in key.split("."):
-		if not value is Dictionary or not value.has(segment):
+	for part in key.split("."):
+		if not value is Dictionary or not value.has(part):
 			return fallback
-		value = value[segment]
+		value = value[part]
 	return value
 
 
@@ -368,50 +526,10 @@ func _load_tuning() -> Dictionary:
 		return {}
 	var parsed: Variant = JSON.parse_string(file.get_as_text())
 	file.close()
-	if not parsed is Dictionary:
-		return {}
-	var values: Variant = parsed.get("tuning", {})
-	return values if values is Dictionary else {}
+	return parsed.get("tuning", {}) if parsed is Dictionary else {}
 
 
-func _evaluate_terminal() -> void:
-	if game_state.state != "playing":
-		return
-	var all_lit: bool = game_state.lanterns.size() == 5
-	for lantern in game_state.lanterns:
-		if not bool(lantern.get("lit", false)):
-			all_lit = false
-			break
-	if all_lit:
-		game_state.state = "won"
-		var time_bonus: int = int(floor(game_state.time_left_s)) * _integer("score.per_second_left", 2)
-		var flame_bonus: int = game_state.flames * _integer("score.per_flame_left", 50)
-		game_state.score += time_bonus + flame_bonus
-		events.append({
-			"type":"game_over", "tick":game_state.sim_tick,
-			"result":"won", "reason":"all_lit"
-		})
-	elif game_state.flames <= 0:
-		game_state.state = "lost"
-		events.append({
-			"type":"game_over", "tick":game_state.sim_tick,
-			"result":"lost", "reason":"no_flames"
-		})
-	elif game_state.time_left_s <= 0.0:
-		game_state.state = "lost"
-		events.append({
-			"type":"game_over", "tick":game_state.sim_tick,
-			"result":"lost", "reason":"dawn"
-		})
-
-
-func snapshot() -> Dictionary:
-	if game_state == null:
-		return {}
-	return game_state.to_snapshot_dict()
-
-
-func drain_events() -> Array[Dictionary]:
-	var result: Array[Dictionary] = events.duplicate(true)
+func drain_events() -> Array:
+	var copy := events.duplicate(true)
 	events.clear()
-	return result
+	return copy
