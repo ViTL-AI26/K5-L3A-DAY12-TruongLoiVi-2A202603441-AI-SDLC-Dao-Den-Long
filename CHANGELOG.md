@@ -1,5 +1,13 @@
 # Changelog
 
+## Phase 4 — v1.0.0 release preparation
+- Added Contract v1.3 benchmark and soak commands, metrics JSON artifacts, and reproducible runners.
+- Added local persistent top-10 leaderboard, end-of-run name capture, leaderboard viewer, and `--export-leaderboard`.
+- Added saved colorblind mode and low-fuel/off-lantern visual cues; documented release/retro/audit evidence.
+
+## Phase 2 — Three islands
+- Added Nights 2–3, dash, Drifters, Charms, pause, and Contract v1.1 headless coverage.
+
 ## Phase 3 — Breaking changes (Contract v1.2)
 - Lanterns no longer remain permanently lit: lit lanterns decay by 1 fuel/second and turn off at zero fuel.
 - Interaction can refuel a lit, non-full lantern; a relight costs 5 motes after a lantern has been lit once.

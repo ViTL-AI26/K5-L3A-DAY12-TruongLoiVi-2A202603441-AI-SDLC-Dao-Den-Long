@@ -4,6 +4,8 @@
 
 Game 3D Godot 4.7.2: Mây thu thập đom đóm, thắp Đèn Lồng và né Bóng Mực qua ba đêm: Đảo Bến, Đảo Cau và Đảo Chuông.
 
+Yêu cầu hệ thống: Godot 4.7.2, macOS hoặc Linux; GPU hỗ trợ OpenGL Compatibility. Benchmark mở cửa sổ 1280×720 và cố gắng tắt VSync.
+
 ## Chạy game
 
 Cài Godot 4.7.2, sau đó tại thư mục repository:
@@ -52,6 +54,16 @@ godot --headless --path . --script res://tests/test_simulation.gd
 ./tests/run_contract_checks.sh
 ```
 
+## Benchmark, soak và leaderboard
+
+```bash
+godot --path . --script res://scripts/benchmark/main.gd -- --seed 42 --duration 30 --out bench.json
+godot --headless --path . --script res://scripts/soak/main.gd -- --seed 7 --nights 10 --out soak.json
+godot --headless --path . --script res://scripts/runtime/run.gd -- --export-leaderboard out.json
+```
+
+Benchmark dùng cảnh chuẩn 200 Bóng Mực, 100 đom đóm, ba đèn sáng và camera orbit. `C` bật chế độ màu dễ phân biệt; `L` mở bảng xếp hạng. Sau khi thua hoặc thắng Đêm 3, nhập tên hợp lệ rồi nhấn Enter để lưu top 10 cục bộ.
+
 ## Phạm vi
 
-Đây là prototype Phase 3 với lõi mô phỏng quyết định dùng chung cho đồ họa và headless. Chi tiết contract và acceptance criteria nằm ở [Ticket-03](docs/specs/TICKET-03.md) và [Phase 3 plan](docs/plans/phase-3-plan.md).
+Đây là bản chuẩn bị phát hành v1.0.0. Chi tiết contract và acceptance criteria nằm ở [Ticket-04](docs/specs/TICKET-04.md) và [Phase 4 plan](docs/plans/phase-4-plan.md).

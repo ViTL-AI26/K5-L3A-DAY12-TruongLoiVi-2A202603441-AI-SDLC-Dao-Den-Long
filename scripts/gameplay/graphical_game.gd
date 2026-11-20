@@ -1,6 +1,7 @@
 extends Node3D
 
 const SimulationScript = preload("res://scripts/core/simulation.gd")
+const LeaderboardScript = preload("res://scripts/runtime/leaderboard.gd")
 const TICK_RATE := 60.0
 const ISLAND_RADIUS := 30.0
 const LANTERN_RADIUS := 20.0
@@ -27,9 +28,19 @@ var elapsed_visual := 0.0
 var current_night := 1
 var campaign_score := 0
 var colorblind_mode := false
+var current_seed := 0
+var name_input: LineEdit
+var awaiting_score_name := false
+var viewing_leaderboard := false
 
 
 func _ready() -> void:
+	var args := OS.get_cmdline_user_args()
+	for i in range(args.size() - 1):
+		if args[i] == "--export-leaderboard":
+			LeaderboardScript.export_to(args[i + 1])
+			get_tree().quit(0)
+			return
 	_load_settings()
 	if get_tree().has_meta("lantern_current_night"):
 		current_night = int(get_tree().get_meta("lantern_current_night"))
@@ -40,7 +51,8 @@ func _ready() -> void:
 
 func _start_game() -> void:
 	sim = SimulationScript.new()
-	sim.initialize(randi(), current_night)
+	current_seed = randi()
+	sim.initialize(current_seed, current_night)
 	_setup_default_entities()
 	_build_player()
 	_build_camera()
@@ -177,6 +189,13 @@ func _build_hud() -> void:
 	message.add_theme_font_size_override("font_size", 34)
 	message.add_theme_color_override("font_color", Color(1.0,0.85,0.48))
 	overlay.add_child(message)
+	name_input = LineEdit.new()
+	name_input.placeholder_text = "Tên 3–12 ký tự [A-Za-z0-9_] rồi Enter"
+	name_input.custom_minimum_size = Vector2(420, 42)
+	name_input.position = Vector2(-210, 100)
+	name_input.set_anchors_preset(Control.PRESET_CENTER)
+	name_input.visible = false
+	overlay.add_child(name_input)
 	overlay.visible = false
 
 
@@ -202,7 +221,12 @@ func _process(delta: float) -> void:
 				message.text = "BÌNH MINH\nTổng điểm: %d\nNhấn R để chơi lại từ Đêm 1" % campaign_score
 		else:
 			message.text = "ĐÊM TỐI BAO TRÙM\nNhấn R để chơi lại Đêm %d" % current_night
-	if overlay.visible and Input.is_key_pressed(KEY_ENTER) and last_state == "won" and current_night < 3:
+		if last_state != "won" or current_night == 3:
+			awaiting_score_name = true
+			name_input.visible = true
+			name_input.grab_focus()
+			message.text += "\nNhập tên để lưu điểm"
+	if overlay.visible and Input.is_key_pressed(KEY_ENTER) and not awaiting_score_name and last_state == "won" and current_night < 3:
 		get_tree().set_meta("lantern_current_night", current_night + 1)
 		get_tree().set_meta("lantern_campaign_score", campaign_score)
 		get_tree().reload_current_scene()
@@ -242,6 +266,21 @@ func _input(event: InputEvent) -> void:
 		camera_pitch = clampf(camera_pitch - event.relative.y * 0.002, -0.85, 0.1)
 	if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	if event is InputEventKey and event.pressed and event.keycode == KEY_ENTER and awaiting_score_name:
+		var won := current_night if last_state == "won" else current_night - 1
+		if LeaderboardScript.submit(name_input.text, campaign_score + sim.game_state.score, won, current_seed):
+			awaiting_score_name = false
+			name_input.visible = false
+			message.text += "\nĐã lưu bảng xếp hạng."
+	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_L:
+		viewing_leaderboard = not viewing_leaderboard
+		if viewing_leaderboard:
+			overlay.visible = true
+			var lines := ["BẢNG XẾP HẠNG"]
+			for row in LeaderboardScript.entries(): lines.append("%s  %d  (%d đêm)" % [row["name"], row["score"], row["nights_won"]])
+			message.text = "\n".join(lines) + "\nL để đóng"
+		else:
+			overlay.visible = sim.game_state.state != "playing"
 	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_C:
 		colorblind_mode = not colorblind_mode
 		_save_settings()
