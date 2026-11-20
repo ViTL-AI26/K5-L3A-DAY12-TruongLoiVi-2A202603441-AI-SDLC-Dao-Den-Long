@@ -1,1 +1,1 @@
-{"avg_fps":144.928502383254,"contract_version":"1.3","frame_ms_p95":7.0,"frames":4348,"load_ms":22,"os":"macOS","p1_low_fps":125.0,"peak_mem_mb":83.6425457000732,"renderer":"Godot 4.7.2-stable (official) / gl_compatibility","vsync_off":true}
+{"avg_fps":148.750416527824,"contract_version":"1.3","frame_ms_p95":9.0,"frames":4464,"load_ms":30,"os":"macOS","p1_low_fps":49.5049504950495,"peak_mem_mb":232.84375,"renderer":"Godot 4.7.2-stable (official) / gl_compatibility","vsync_off":true}

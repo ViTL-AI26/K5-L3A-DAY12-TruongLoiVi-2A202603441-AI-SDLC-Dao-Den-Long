@@ -5,6 +5,16 @@ const LeaderboardScript = preload("res://scripts/runtime/leaderboard.gd")
 const TICK_RATE := 60.0
 const ISLAND_RADIUS := 30.0
 const LANTERN_RADIUS := 20.0
+const DEFAULT_BINDINGS := {
+	"move_left": KEY_A, "move_right": KEY_D, "move_forward": KEY_W, "move_back": KEY_S,
+	"jump": KEY_SPACE, "interact": KEY_E, "pulse": KEY_Q, "dash": KEY_SHIFT,
+	"pause_game": KEY_P
+}
+const BINDABLE_ACTIONS := ["move_left", "move_right", "move_forward", "move_back", "jump", "interact", "pulse", "dash", "pause_game"]
+const ACTION_LABELS := {
+	"move_left":"Trái", "move_right":"Phải", "move_forward":"Tiến", "move_back":"Lùi",
+	"jump":"Nhảy", "interact":"Tương tác", "pulse":"Tỏa sáng", "dash":"Lướt", "pause_game":"Tạm dừng"
+}
 
 var sim
 var accumulator := 0.0
@@ -21,7 +31,9 @@ var visual_lanterns: Dictionary = {}
 var player_root: Node3D
 var camera: Camera3D
 var hud: Label
+var controls_label: Label
 var message: Label
+var alert_label: Label
 var overlay: ColorRect
 var last_state := "playing"
 var elapsed_visual := 0.0
@@ -32,6 +44,20 @@ var current_seed := 0
 var name_input: LineEdit
 var awaiting_score_name := false
 var viewing_leaderboard := false
+var menu_open := false
+var settings_open := false
+var rebinding_action := ""
+var settings_notice := ""
+var reduced_motion := false
+var large_text := false
+var mouse_sensitivity := 1.0
+var master_volume := 0.75
+var audio_player: AudioStreamPlayer
+var audio_playback: AudioStreamGeneratorPlayback
+var audio_phase := 0.0
+var audio_frequency := 0.0
+var audio_frames_left := 0
+var alert_until := 0.0
 
 
 func _ready() -> void:
@@ -41,12 +67,14 @@ func _ready() -> void:
 			LeaderboardScript.export_to(args[i + 1])
 			get_tree().quit(0)
 			return
+	_ensure_input_actions()
 	_load_settings()
 	if get_tree().has_meta("lantern_current_night"):
 		current_night = int(get_tree().get_meta("lantern_current_night"))
 		campaign_score = int(get_tree().get_meta("lantern_campaign_score", 0))
 	_build_world()
 	_start_game()
+	_show_main_menu()
 
 
 func _start_game() -> void:
@@ -57,6 +85,7 @@ func _start_game() -> void:
 	_build_player()
 	_build_camera()
 	_build_hud()
+	_setup_audio()
 	_sync_world()
 	last_state = "playing"
 	overlay.visible = false
@@ -172,12 +201,20 @@ func _build_hud() -> void:
 	hud.add_theme_constant_override("shadow_offset_x", 2)
 	hud.add_theme_constant_override("shadow_offset_y", 2)
 	layer.add_child(hud)
-	var controls := Label.new()
-	controls.text = "WASD: di chuyển   Space: nhảy   Shift: lướt   E: nạp/châm dầu   Q: tỏa sáng   P: tạm dừng   C: màu dễ phân biệt"
-	controls.position = Vector2(24, get_viewport().get_visible_rect().size.y - 42)
-	controls.add_theme_font_size_override("font_size", 14)
-	controls.add_theme_color_override("font_color", Color(0.88,0.88,0.95))
-	layer.add_child(controls)
+	controls_label = Label.new()
+	controls_label.position = Vector2(24, get_viewport().get_visible_rect().size.y - 42)
+	controls_label.add_theme_font_size_override("font_size", 14)
+	controls_label.add_theme_color_override("font_color", Color(0.88,0.88,0.95))
+	layer.add_child(controls_label)
+	alert_label = Label.new()
+	alert_label.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	alert_label.position = Vector2(-260, 80)
+	alert_label.size = Vector2(520, 80)
+	alert_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	alert_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	alert_label.add_theme_font_size_override("font_size", 22)
+	alert_label.add_theme_color_override("font_color", Color("F2C14E"))
+	layer.add_child(alert_label)
 	overlay = ColorRect.new()
 	overlay.color = Color(0.015,0.02,0.05,0.82)
 	overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -197,19 +234,27 @@ func _build_hud() -> void:
 	name_input.visible = false
 	overlay.add_child(name_input)
 	overlay.visible = false
+	_apply_accessibility_ui()
 
 
 func _process(delta: float) -> void:
 	elapsed_visual += delta
+	_process_audio()
 	if sim == null:
 		return
-	accumulator += minf(delta, 0.1)
-	while accumulator >= 1.0 / TICK_RATE and sim.game_state.state == "playing":
-		sim.step(_read_input())
+	if not _is_modal_ui():
+		accumulator += minf(delta, 0.1)
+	while not _is_modal_ui() and accumulator >= 1.0 / TICK_RATE and sim.game_state.state == "playing":
+		var input_frame := _read_input()
+		if Input.is_action_just_pressed("jump") and sim.game_state.grounded:
+			_play_cue("jump")
+		sim.step(input_frame)
 		accumulator -= 1.0 / TICK_RATE
+		_handle_gameplay_events(sim.drain_events())
 	_sync_world()
 	_update_camera()
 	_update_hud()
+	_update_accessibility_alerts()
 	if sim.game_state.state != "playing" and last_state == "playing":
 		last_state = sim.game_state.state
 		overlay.visible = true
@@ -239,59 +284,246 @@ func _process(delta: float) -> void:
 
 func _read_input() -> Dictionary:
 	var move := Vector2.ZERO
-	if Input.is_key_pressed(KEY_A): move.x -= 1.0
-	if Input.is_key_pressed(KEY_D): move.x += 1.0
-	if Input.is_key_pressed(KEY_W): move.y += 1.0
-	if Input.is_key_pressed(KEY_S): move.y -= 1.0
-	var interact_now := Input.is_key_pressed(KEY_E)
-	var pulse_now := Input.is_key_pressed(KEY_Q)
-	var jump_now := Input.is_key_pressed(KEY_SPACE)
+	if Input.is_action_pressed("move_left"): move.x -= 1.0
+	if Input.is_action_pressed("move_right"): move.x += 1.0
+	if Input.is_action_pressed("move_forward"): move.y += 1.0
+	if Input.is_action_pressed("move_back"): move.y -= 1.0
+	var interact_now := Input.is_action_pressed("interact")
+	var pulse_now := Input.is_action_pressed("pulse")
+	var jump_now := Input.is_action_pressed("jump")
 	var frame := {
 		"move":[move.x, move.y],
 		"cam_yaw_deg":rad_to_deg(camera_yaw),
 		"interact":interact_now,
 		"pulse":pulse_now,
 		"jump":jump_now,
-		"dash":Input.is_key_pressed(KEY_SHIFT),
-		"pause":Input.is_key_pressed(KEY_P)
+		"dash":Input.is_action_pressed("dash"),
+		"pause":Input.is_action_pressed("pause_game")
 	}
 	return frame
 
 
 func _input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and not event.echo:
+		if rebinding_action != "":
+			if event.keycode == KEY_ESCAPE:
+				rebinding_action = ""
+				settings_notice = "Đã hủy đổi phím."
+				_show_settings()
+			else:
+				_try_rebind(rebinding_action, _event_keycode(event))
+			return
+		if awaiting_score_name and event.keycode == KEY_ENTER:
+			_submit_score()
+			return
+		if menu_open:
+			_handle_menu_key(event.keycode)
+			return
+		if settings_open:
+			_handle_settings_key(event.keycode)
+			return
+		if viewing_leaderboard:
+			if event.keycode == KEY_L or event.keycode == KEY_ESCAPE:
+				_show_main_menu()
+			return
+		if event.keycode == KEY_ESCAPE:
+			_show_main_menu()
+			return
+		if event.keycode == KEY_L:
+			_show_leaderboard()
+			return
+		if event.keycode == KEY_O:
+			_show_settings()
+			return
+		if event.keycode == KEY_C:
+			colorblind_mode = not colorblind_mode
+			_save_settings()
+			_refresh_shade_colors()
+			_show_alert("Màu dễ phân biệt: %s" % ("BẬT" if colorblind_mode else "TẮT"), 2.0)
+			return
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
-	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-		camera_yaw -= event.relative.x * 0.003
-		camera_pitch = clampf(camera_pitch - event.relative.y * 0.002, -0.85, 0.1)
-	if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
-		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-	if event is InputEventKey and event.pressed and event.keycode == KEY_ENTER and awaiting_score_name:
-		var won := current_night if last_state == "won" else current_night - 1
-		if LeaderboardScript.submit(name_input.text, campaign_score + sim.game_state.score, won, current_seed):
-			awaiting_score_name = false
-			name_input.visible = false
-			message.text += "\nĐã lưu bảng xếp hạng."
-	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_L:
-		viewing_leaderboard = not viewing_leaderboard
-		if viewing_leaderboard:
-			overlay.visible = true
-			var lines := ["BẢNG XẾP HẠNG"]
-			for row in LeaderboardScript.entries(): lines.append("%s  %d  (%d đêm)" % [row["name"], row["score"], row["nights_won"]])
-			message.text = "\n".join(lines) + "\nL để đóng"
-		else:
-			overlay.visible = sim.game_state.state != "playing"
-	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_C:
-		colorblind_mode = not colorblind_mode
-		_save_settings()
-		for node in visual_shades.values():
-			(node as Node3D).queue_free()
-		visual_shades.clear()
+	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and not _is_modal_ui():
+		camera_yaw -= event.relative.x * 0.003 * mouse_sensitivity
+		camera_pitch = clampf(camera_pitch - event.relative.y * 0.002 * mouse_sensitivity, -0.85, 0.1)
 	if event is InputEventMouseButton and event.pressed:
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
 			camera_distance = maxf(5.0, camera_distance - 0.7)
 		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 			camera_distance = minf(14.0, camera_distance + 0.7)
+
+
+func _is_modal_ui() -> bool:
+	return menu_open or settings_open or viewing_leaderboard or awaiting_score_name
+
+
+func _show_main_menu() -> void:
+	menu_open = true
+	settings_open = false
+	viewing_leaderboard = false
+	rebinding_action = ""
+	overlay.visible = true
+	name_input.visible = false
+	message.text = "ĐẢO ĐÈN LỒNG\n\nEnter — tiếp tục\nL — bảng xếp hạng\nO — cài đặt & trợ năng\nR — chơi lại Đêm %d\nEsc — đóng menu" % current_night
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+
+func _close_menu() -> void:
+	menu_open = false
+	settings_open = false
+	viewing_leaderboard = false
+	overlay.visible = sim.game_state.state != "playing"
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+
+func _show_leaderboard() -> void:
+	menu_open = false
+	settings_open = false
+	viewing_leaderboard = true
+	overlay.visible = true
+	var lines := ["BẢNG XẾP HẠNG CỤC BỘ"]
+	var rank := 1
+	for row in LeaderboardScript.entries():
+		lines.append("%d. %s  %d  (%d đêm)" % [rank, row["name"], row["score"], row["nights_won"]])
+		rank += 1
+	if rank == 1:
+		lines.append("Chưa có điểm nào được lưu.")
+	lines.append("\nL hoặc Esc — quay lại menu")
+	message.text = "\n".join(lines)
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+
+func _show_settings() -> void:
+	menu_open = false
+	settings_open = true
+	viewing_leaderboard = false
+	overlay.visible = true
+	var lines := ["CÀI ĐẶT & TRỢ NĂNG", ""]
+	for i in BINDABLE_ACTIONS.size():
+		var action: String = BINDABLE_ACTIONS[i]
+		lines.append("%d — %s: %s" % [i + 1, ACTION_LABELS[action], _binding_name(action)])
+	lines.append("")
+	lines.append("C — màu dễ phân biệt: %s" % ("BẬT" if colorblind_mode else "TẮT"))
+	lines.append("M — giảm chuyển động: %s" % ("BẬT" if reduced_motion else "TẮT"))
+	lines.append("T — chữ lớn: %s" % ("BẬT" if large_text else "TẮT"))
+	lines.append("[ / ] — độ nhạy chuột: %.1fx" % mouse_sensitivity)
+	lines.append("- / = — âm lượng: %d%%" % int(round(master_volume * 100.0)))
+	lines.append("R — khôi phục phím mặc định    Esc — menu")
+	if settings_notice != "":
+		lines.append("\n" + settings_notice)
+	message.text = "\n".join(lines)
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+
+func _handle_menu_key(keycode: Key) -> void:
+	if keycode == KEY_ENTER or keycode == KEY_ESCAPE:
+		_close_menu()
+	elif keycode == KEY_L:
+		_show_leaderboard()
+	elif keycode == KEY_O:
+		_show_settings()
+	elif keycode == KEY_R:
+		get_tree().reload_current_scene()
+
+
+func _handle_settings_key(keycode: Key) -> void:
+	if keycode >= KEY_1 and keycode <= KEY_9:
+		var index := int(keycode - KEY_1)
+		if index < BINDABLE_ACTIONS.size():
+			rebinding_action = BINDABLE_ACTIONS[index]
+			settings_notice = "Nhấn một phím mới cho %s, hoặc Esc để hủy." % ACTION_LABELS[rebinding_action]
+			_show_settings()
+		return
+	match keycode:
+		KEY_C:
+			colorblind_mode = not colorblind_mode
+			_refresh_shade_colors()
+		KEY_M:
+			reduced_motion = not reduced_motion
+		KEY_T:
+			large_text = not large_text
+			_apply_accessibility_ui()
+		KEY_BRACKETLEFT:
+			mouse_sensitivity = clampf(mouse_sensitivity - 0.1, 0.3, 2.0)
+		KEY_BRACKETRIGHT:
+			mouse_sensitivity = clampf(mouse_sensitivity + 0.1, 0.3, 2.0)
+		KEY_MINUS:
+			master_volume = clampf(master_volume - 0.1, 0.0, 1.0)
+			_apply_volume()
+		KEY_EQUAL:
+			master_volume = clampf(master_volume + 0.1, 0.0, 1.0)
+			_apply_volume()
+		KEY_R:
+			_restore_default_bindings()
+			settings_notice = "Đã khôi phục toàn bộ phím mặc định."
+		KEY_ESCAPE:
+			_show_main_menu()
+			return
+		_:
+			return
+	_save_settings()
+	_show_settings()
+
+
+func _event_keycode(event: InputEventKey) -> Key:
+	return event.physical_keycode if event.physical_keycode != KEY_NONE else event.keycode
+
+
+func _try_rebind(action: String, keycode: Key) -> void:
+	for other in BINDABLE_ACTIONS:
+		if other != action and _action_keycode(other) == keycode:
+			settings_notice = "%s đang dùng cho %s; không thay đổi." % [OS.get_keycode_string(keycode), ACTION_LABELS[other]]
+			rebinding_action = ""
+			_show_settings()
+			return
+	_set_action_key(action, keycode)
+	rebinding_action = ""
+	settings_notice = "Đã gán %s cho %s." % [OS.get_keycode_string(keycode), ACTION_LABELS[action]]
+	_save_settings()
+	_show_settings()
+
+
+func _ensure_input_actions() -> void:
+	for action in DEFAULT_BINDINGS:
+		if not InputMap.has_action(action):
+			InputMap.add_action(action)
+		if InputMap.action_get_events(action).is_empty():
+			_set_action_key(action, DEFAULT_BINDINGS[action])
+
+
+func _set_action_key(action: String, keycode: Key) -> void:
+	InputMap.action_erase_events(action)
+	var input_event := InputEventKey.new()
+	input_event.physical_keycode = keycode
+	InputMap.action_add_event(action, input_event)
+
+
+func _action_keycode(action: String) -> Key:
+	var events := InputMap.action_get_events(action)
+	if events.is_empty() or not events[0] is InputEventKey:
+		return KEY_NONE
+	var key_event: InputEventKey = events[0]
+	return key_event.physical_keycode if key_event.physical_keycode != KEY_NONE else key_event.keycode
+
+
+func _binding_name(action: String) -> String:
+	return OS.get_keycode_string(_action_keycode(action))
+
+
+func _restore_default_bindings() -> void:
+	for action in DEFAULT_BINDINGS:
+		_set_action_key(action, DEFAULT_BINDINGS[action])
+	_save_settings()
+
+
+func _submit_score() -> void:
+	var won := current_night if last_state == "won" else current_night - 1
+	if LeaderboardScript.submit(name_input.text, campaign_score + sim.game_state.score, won, current_seed):
+		awaiting_score_name = false
+		name_input.visible = false
+		message.text += "\nĐã lưu bảng xếp hạng."
+	else:
+		message.text += "\nTên phải có 3–12 ký tự: A–Z, 0–9 hoặc _."
 
 
 func _update_camera() -> void:
@@ -326,7 +558,9 @@ func _sync_world() -> void:
 		var orb: MeshInstance3D = node.get_node("Flame")
 		orb.visible = bool(lantern.lit) and blink
 		orb.material_override = _material(Color(1.0,0.55,0.12), 2.0)
-		node.scale = Vector3.ONE if bool(lantern.lit) else Vector3(0.8, 0.8, 0.8)
+		var torn_paper: Node3D = node.get_node("TornPaper")
+		torn_paper.visible = not bool(lantern.lit)
+		node.scale = Vector3.ONE if bool(lantern.lit) else Vector3(0.9, 0.9, 0.9)
 
 
 func _sync_entities(items: Array, nodes: Dictionary, kind: String) -> void:
@@ -344,7 +578,7 @@ func _sync_entities(items: Array, nodes: Dictionary, kind: String) -> void:
 		var node: Node3D = nodes[id]
 		node.position = item.pos
 		if kind == "mote":
-			node.position.y = 0.65 + sin(elapsed_visual*2.2 + float(id.length()))*0.12
+			node.position.y = 0.65 + (0.0 if reduced_motion else sin(elapsed_visual*2.2 + float(id.length()))*0.12)
 		else:
 			node.visible = str(item.get("state","chase")) != "removed"
 			node.position.y = 0.85 if str(item.get("state","chase")) == "chase" else 0.55
@@ -371,6 +605,10 @@ func _update_hud() -> void:
 		"   [TẠM DỪNG]" if sim.game_state.paused else "", nearby_fuel,
 		"   ⚠ MÀU DỄ PHÂN BIỆT" if colorblind_mode else ""
 	]
+	controls_label.text = "%s/%s/%s/%s: đi   %s: nhảy   %s: lướt   %s: nạp/châm dầu   %s: tỏa sáng   %s: tạm dừng   Esc: menu" % [
+		_binding_name("move_forward"), _binding_name("move_left"), _binding_name("move_back"), _binding_name("move_right"),
+		_binding_name("jump"), _binding_name("dash"), _binding_name("interact"), _binding_name("pulse"), _binding_name("pause_game")
+	]
 
 
 func _create_lantern(id: String) -> Node3D:
@@ -380,6 +618,12 @@ func _create_lantern(id: String) -> Node3D:
 	_make_cylinder_child(root, Vector3(0,1.6,0), 0.12, 3.2, Color(0.28,0.17,0.09))
 	_make_sphere_child(root, Vector3(0,3.35,0), 0.62, Color(0.22,0.15,0.11))
 	_make_sphere_child(root, Vector3(0,3.35,0), 0.40, Color(0.72,0.34,0.10))
+	var torn_paper := Node3D.new()
+	torn_paper.name = "TornPaper"
+	root.add_child(torn_paper)
+	for i in range(3):
+		var strip := _make_box("PaperStrip", Vector3((float(i) - 1.0) * 0.22, 3.12 - float(i % 2) * 0.16, -0.43), Vector3(0.18, 0.62 + float(i % 2) * 0.18, 0.03), Color(0.72,0.22,0.16), torn_paper)
+		strip.rotation_degrees.z = -16.0 + float(i) * 16.0
 	var flame := _make_sphere_child(root, Vector3(0,3.35,0), 0.28, Color(1.0,0.63,0.12), 2.0)
 	flame.name = "Flame"
 	flame.visible = false
@@ -422,15 +666,145 @@ func _horizontal_distance(a: Vector3, b: Vector3) -> float:
 	return Vector2(a.x - b.x, a.z - b.z).length()
 
 
+func _handle_gameplay_events(events: Array) -> void:
+	for record in events:
+		match str(record.get("type", "")):
+			"mote_picked":
+				_play_cue("pickup")
+			"lantern_lit":
+				_play_cue("lantern")
+				_show_alert("Đèn lồng bừng sáng!", 2.0)
+			"pulse":
+				_play_cue("pulse")
+			"player_hit", "fall_respawn":
+				_play_cue("hit")
+				_show_alert("⚠ Ngọn Lửa suy yếu", 2.0)
+			"dash":
+				_play_cue("dash")
+			"shade_spawned":
+				_play_cue("spawn")
+				_show_alert("⚠ Bóng Mực xuất hiện %s" % _nearest_shade_arrow(), 3.0)
+			"game_over":
+				_play_cue("win" if record.get("result", "") == "won" else "lose")
+
+
+func _update_accessibility_alerts() -> void:
+	if alert_label == null or sim == null:
+		return
+	if sim.game_state.time_left_s <= 10.0 and sim.game_state.state == "playing":
+		_show_alert("⚠ 10 GIÂY CUỐI — thắp đèn ngay!", 0.3)
+	elif current_night == 3 and sim.game_state.state == "playing" and int(sim.game_state.sim_tick) % 1800 >= 1680 and int(sim.game_state.sim_tick) % 1800 < 1800:
+		_show_alert("⚠ Gió mạnh sắp đến", 0.3)
+	if elapsed_visual > alert_until:
+		alert_label.text = ""
+
+
+func _show_alert(text_value: String, duration: float) -> void:
+	if alert_label == null:
+		return
+	alert_label.text = text_value
+	alert_until = maxf(alert_until, elapsed_visual + duration)
+
+
+func _nearest_shade_arrow() -> String:
+	if sim == null or sim.game_state.shades.is_empty():
+		return ""
+	var nearest: Dictionary = sim.game_state.shades[0]
+	var best := INF
+	for shade in sim.game_state.shades:
+		var distance := _horizontal_distance(sim.game_state.player_pos, shade.pos)
+		if distance < best:
+			best = distance
+			nearest = shade
+	var direction: Vector3 = nearest.pos - sim.game_state.player_pos
+	if absf(direction.x) >= absf(direction.z):
+		return "←" if direction.x < 0.0 else "→"
+	return "↑" if direction.z < 0.0 else "↓"
+
+
+func _refresh_shade_colors() -> void:
+	for node in visual_shades.values():
+		(node as Node3D).queue_free()
+	visual_shades.clear()
+
+
+func _apply_accessibility_ui() -> void:
+	if hud != null:
+		hud.add_theme_font_size_override("font_size", 28 if large_text else 20)
+	if controls_label != null:
+		controls_label.add_theme_font_size_override("font_size", 19 if large_text else 14)
+	if alert_label != null:
+		alert_label.add_theme_font_size_override("font_size", 28 if large_text else 22)
+	if message != null:
+		message.add_theme_font_size_override("font_size", 42 if large_text else 34)
+
+
+func _setup_audio() -> void:
+	if is_instance_valid(audio_player):
+		return
+	audio_player = AudioStreamPlayer.new()
+	var stream := AudioStreamGenerator.new()
+	stream.mix_rate = 22050.0
+	stream.buffer_length = 0.25
+	audio_player.stream = stream
+	add_child(audio_player)
+	_apply_volume()
+	audio_player.play()
+	audio_playback = audio_player.get_stream_playback()
+
+
+func _apply_volume() -> void:
+	if is_instance_valid(audio_player):
+		audio_player.volume_db = linear_to_db(maxf(0.001, master_volume))
+
+
+func _play_cue(kind: String) -> void:
+	var tones := {
+		"pickup":[740.0, 0.05], "lantern":[440.0, 0.20], "pulse":[640.0, 0.14],
+		"hit":[120.0, 0.20], "jump":[520.0, 0.07], "dash":[330.0, 0.08], "spawn":[180.0, 0.16],
+		"win":[880.0, 0.35], "lose":[95.0, 0.35]
+	}
+	if not tones.has(kind):
+		return
+	audio_frequency = tones[kind][0]
+	audio_frames_left = int(tones[kind][1] * 22050.0)
+
+
+func _process_audio() -> void:
+	if audio_playback == null:
+		return
+	var frames := mini(audio_playback.get_frames_available(), 512)
+	for i in frames:
+		var sample := 0.0
+		if audio_frames_left > 0:
+			sample = sin(audio_phase) * 0.12
+			audio_phase += TAU * audio_frequency / 22050.0
+			audio_frames_left -= 1
+		audio_playback.push_frame(Vector2(sample, sample))
+
+
 func _load_settings() -> void:
 	var config := ConfigFile.new()
 	if config.load("user://settings.cfg") == OK:
 		colorblind_mode = bool(config.get_value("accessibility", "colorblind_mode", false))
+		reduced_motion = bool(config.get_value("accessibility", "reduced_motion", false))
+		large_text = bool(config.get_value("accessibility", "large_text", false))
+		mouse_sensitivity = clampf(float(config.get_value("controls", "mouse_sensitivity", 1.0)), 0.3, 2.0)
+		master_volume = clampf(float(config.get_value("audio", "master_volume", 0.75)), 0.0, 1.0)
+		for action in BINDABLE_ACTIONS:
+			var keycode := int(config.get_value("controls", "key_" + action, int(DEFAULT_BINDINGS[action])))
+			_set_action_key(action, keycode)
 
 
 func _save_settings() -> void:
 	var config := ConfigFile.new()
 	config.set_value("accessibility", "colorblind_mode", colorblind_mode)
+	config.set_value("accessibility", "reduced_motion", reduced_motion)
+	config.set_value("accessibility", "large_text", large_text)
+	config.set_value("controls", "mouse_sensitivity", mouse_sensitivity)
+	for action in BINDABLE_ACTIONS:
+		config.set_value("controls", "key_" + action, int(_action_keycode(action)))
+	config.set_value("audio", "master_volume", master_volume)
 	config.save("user://settings.cfg")
 
 

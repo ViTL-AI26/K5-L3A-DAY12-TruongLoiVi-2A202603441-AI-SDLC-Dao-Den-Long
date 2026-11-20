@@ -4,6 +4,8 @@
 - Added Contract v1.3 benchmark and soak commands, metrics JSON artifacts, and reproducible runners.
 - Added local persistent top-10 leaderboard, end-of-run name capture, leaderboard viewer, and `--export-leaderboard`.
 - Added saved colorblind mode and low-fuel/off-lantern visual cues; documented release/retro/audit evidence.
+- Added a main menu, persisted mouse/volume/reduced-motion/large-text controls, safe key rebinding with restore defaults, accessibility subtitles/directional alerts, procedural gameplay audio cues, and torn-paper unlit-lantern detail.
+- Added portable Docker headless runner and release instructions.
 
 ## Phase 2 — Three islands
 - Added Nights 2–3, dash, Drifters, Charms, pause, and Contract v1.1 headless coverage.

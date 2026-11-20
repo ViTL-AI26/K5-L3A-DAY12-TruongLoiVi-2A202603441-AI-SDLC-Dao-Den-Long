@@ -23,7 +23,10 @@ godot --path .
 - `Q`: phát xung sáng, tiêu hao 1 đom đóm.
 - `Shift`: lướt 0.2 giây theo hướng đang đi.
 - `P`: tạm dừng/tiếp tục mô phỏng.
-- `C`: bật/tắt bảng màu dễ phân biệt (được lưu cục bộ).
+- `Esc`: mở menu chính (tiếp tục, bảng xếp hạng, cài đặt hoặc chơi lại).
+- `L`: mở bảng xếp hạng cục bộ; `O`: mở cài đặt/trợ năng.
+- Trong cài đặt: `1`–`9` chọn action để remap, sau đó nhấn phím mới; `R` khôi phục phím mặc định. Phát hiện phím trùng và từ chối thay đổi đó.
+- `C`: bật/tắt bảng màu dễ phân biệt (được lưu cục bộ). Cài đặt cũng có giảm chuyển động, chữ lớn, độ nhạy chuột và âm lượng được lưu cục bộ.
 - Di chuyển chuột: xoay camera; con lăn: zoom.
 - `Esc`: thả chuột; click trái để bắt chuột lại.
 - `R`: chơi lại sau khi thắng/thua.
@@ -63,6 +66,10 @@ godot --headless --path . --script res://scripts/runtime/run.gd -- --export-lead
 ```
 
 Benchmark dùng cảnh chuẩn 200 Bóng Mực, 100 đom đóm, ba đèn sáng và camera orbit. `C` bật chế độ màu dễ phân biệt; `L` mở bảng xếp hạng. Sau khi thua hoặc thắng Đêm 3, nhập tên hợp lệ rồi nhấn Enter để lưu top 10 cục bộ.
+
+## Docker / phát hành
+
+Có Docker runner headless cố định Godot 4.7.2 cho macOS/Linux. Xem lệnh build/chạy và cách lưu artifact ở [hướng dẫn release](docs/RELEASE.md). Chạy benchmark đồ họa trên máy đích 1280×720 trước khi dùng số liệu làm bằng chứng phát hành.
 
 ## Phạm vi
 

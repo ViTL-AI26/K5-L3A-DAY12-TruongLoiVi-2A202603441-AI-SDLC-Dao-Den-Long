@@ -1,0 +1,5 @@
+.git
+.godot
+docs/demo/*.mp4
+*.jsonl
+user-data
