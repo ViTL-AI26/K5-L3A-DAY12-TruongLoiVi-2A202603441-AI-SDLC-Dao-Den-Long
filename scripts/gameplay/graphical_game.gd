@@ -24,16 +24,21 @@ var message: Label
 var overlay: ColorRect
 var last_state := "playing"
 var elapsed_visual := 0.0
+var current_night := 1
+var campaign_score := 0
 
 
 func _ready() -> void:
+	if get_tree().has_meta("lantern_current_night"):
+		current_night = int(get_tree().get_meta("lantern_current_night"))
+		campaign_score = int(get_tree().get_meta("lantern_campaign_score", 0))
 	_build_world()
 	_start_game()
 
 
 func _start_game() -> void:
 	sim = SimulationScript.new()
-	sim.initialize(randi())
+	sim.initialize(randi(), current_night)
 	_setup_default_entities()
 	_build_player()
 	_build_camera()
@@ -45,34 +50,37 @@ func _start_game() -> void:
 
 
 func _setup_default_entities() -> void:
-	for i in range(5):
-		var a := TAU * float(i) / 5.0
-		sim.game_state.lanterns.append({
-			"id": "L%d" % (i + 1),
-			"pos": Vector3(cos(a) * LANTERN_RADIUS, 0, sin(a) * LANTERN_RADIUS),
-			"deposited": 0,
-			"lit": false
-		})
-	# Five lanterns cost five motes each: provide the full 25-mote objective.
-	# The 50% hit drop is recoverable, so the total supply remains sufficient
-	# as long as the player collects dropped motes again.
-	var mote_positions := [
-		Vector3(0,0,5), Vector3(7,0,3), Vector3(-7,0,4),
-		Vector3(11,0,11), Vector3(-12,0,10), Vector3(3,0,-9),
-		Vector3(-5,0,-13), Vector3(15,0,-4), Vector3(-16,0,-3),
-		Vector3(0,0,16), Vector3(8,0,-15), Vector3(-10,0,-16),
-		Vector3(17,0,8), Vector3(-18,0,7), Vector3(4,0,21),
-		Vector3(5,0,13), Vector3(-8,0,17), Vector3(13,0,-11),
-		Vector3(-14,0,-12), Vector3(20,0,1), Vector3(-21,0,0),
-		Vector3(2,0,-20), Vector3(20,0,13), Vector3(-20,0,14),
-		Vector3(10,0,21)
-	]
-	for i in range(mote_positions.size()):
-		sim.game_state.motes.append({"id":"M%d" % (i+1), "pos":mote_positions[i]})
-	sim.game_state.shades = [
-		{"id":"S1", "pos":Vector3(24,0,4), "state":"chase", "stun_ticks":0},
-		{"id":"S2", "pos":Vector3(-23,0,-7), "state":"chase", "stun_ticks":0}
-	]
+	var lantern_positions: Array
+	var mote_positions: Array
+	var shade_points: Array
+	if current_night == 1:
+		lantern_positions = [Vector3(0,0,25), Vector3(23.8,0,7.7), Vector3(14.7,0,-20.2), Vector3(-14.7,0,-20.2), Vector3(-23.8,0,7.7)]
+		mote_positions = _circle_points(Vector3.ZERO, 12, 8) + _circle_points(Vector3.ZERO, 33, 16)
+		shade_points = _circle_points(Vector3.ZERO, 37, 12, 15)
+	elif current_night == 2:
+		lantern_positions = [Vector3(0,0,20), Vector3(17,0,-10), Vector3(-17,0,-10), Vector3(70,0,20), Vector3(87,0,-10), Vector3(53,0,-10)]
+		mote_positions = _circle_points(Vector3.ZERO, 10, 4) + _circle_points(Vector3.ZERO, 22, 8) + _circle_points(Vector3(70,0,0), 10, 4) + _circle_points(Vector3(70,0,0), 22, 8)
+		shade_points = _circle_points(Vector3.ZERO, 26, 8, 22.5) + _circle_points(Vector3(70,0,0), 26, 8, 22.5)
+		sim.game_state.charms = [{"id":"C1", "pos":Vector3(35,0,0), "available":true, "respawn_ticks":0}]
+	else:
+		lantern_positions = [Vector3(0,6,6), Vector3(18,3,10), Vector3(-18,3,10), Vector3(35,0,-10), Vector3(-35,0,-10), Vector3(20,0,-35), Vector3(-20,0,-35)]
+		mote_positions = _circle_points(Vector3.ZERO, 34, 18) + _circle_points(Vector3.ZERO, 18, 8, 20, 3) + _circle_points(Vector3.ZERO, 5, 4, 45, 6)
+		shade_points = _circle_points(Vector3.ZERO, 43, 16, 22.5)
+		sim.game_state.charms = [{"id":"C1", "pos":Vector3(30,0,25), "available":true, "respawn_ticks":0}, {"id":"C2", "pos":Vector3(-30,0,25), "available":true, "respawn_ticks":0}]
+	for i in lantern_positions.size():
+		sim.game_state.lanterns.append({"id":"L%d" % (i + 1), "pos":lantern_positions[i], "deposited":0, "lit":false})
+	sim.game_state.mote_spawn_points = mote_positions
+	sim.game_state.shade_spawn_points = shade_points
+	for i in range(mini(20, mote_positions.size())):
+		sim.game_state.motes.append({"id":"M%d" % (i + 1), "pos":mote_positions[i], "kind":"random", "ttl_ticks":-1, "born_tick":-1})
+
+
+func _circle_points(center: Vector3, radius: float, count: int, start_deg: float = 0.0, y: float = 0.0) -> Array:
+	var points: Array = []
+	for i in count:
+		var angle := deg_to_rad(start_deg + 360.0 * float(i) / count)
+		points.append(Vector3(center.x + cos(angle) * radius, y, center.z + sin(angle) * radius))
+	return points
 
 
 func _build_world() -> void:
@@ -151,7 +159,7 @@ func _build_hud() -> void:
 	hud.add_theme_constant_override("shadow_offset_y", 2)
 	layer.add_child(hud)
 	var controls := Label.new()
-	controls.text = "WASD: di chuyển   Space: nhảy   E: nạp đèn   Q: tỏa sáng   Mouse: camera   Esc: thả chuột"
+	controls.text = "WASD: di chuyển   Space: nhảy   Shift: lướt   E: nạp đèn   Q: tỏa sáng   P: tạm dừng   Mouse: camera"
 	controls.position = Vector2(24, get_viewport().get_visible_rect().size.y - 42)
 	controls.add_theme_font_size_override("font_size", 14)
 	controls.add_theme_color_override("font_color", Color(0.88,0.88,0.95))
@@ -185,10 +193,21 @@ func _process(delta: float) -> void:
 		last_state = sim.game_state.state
 		overlay.visible = true
 		if last_state == "won":
-			message.text = "ĐẢO ĐÃ SÁNG!\nMây đã thắp lại mọi đèn.\nNhấn R để chơi lại"
+			campaign_score += sim.game_state.score
+			if current_night < 3:
+				message.text = "ĐÊM %d ĐÃ SÁNG!\nÔng Đăng: Hãy đến hòn đảo tiếp theo.\nNhấn Enter để tiếp tục" % current_night
+			else:
+				message.text = "BÌNH MINH\nTổng điểm: %d\nNhấn R để chơi lại từ Đêm 1" % campaign_score
 		else:
-			message.text = "ĐÊM TỐI BAO TRÙM\nMây đã cạn ánh sáng.\nNhấn R để thử lại"
-	if overlay.visible and Input.is_key_pressed(KEY_R):
+			message.text = "ĐÊM TỐI BAO TRÙM\nNhấn R để chơi lại Đêm %d" % current_night
+	if overlay.visible and Input.is_key_pressed(KEY_ENTER) and last_state == "won" and current_night < 3:
+		get_tree().set_meta("lantern_current_night", current_night + 1)
+		get_tree().set_meta("lantern_campaign_score", campaign_score)
+		get_tree().reload_current_scene()
+	elif overlay.visible and Input.is_key_pressed(KEY_R):
+		if last_state == "won" and current_night == 3:
+			get_tree().set_meta("lantern_current_night", 1)
+			get_tree().set_meta("lantern_campaign_score", 0)
 		get_tree().reload_current_scene()
 
 
@@ -206,7 +225,9 @@ func _read_input() -> Dictionary:
 		"cam_yaw_deg":rad_to_deg(camera_yaw),
 		"interact":interact_now,
 		"pulse":pulse_now,
-		"jump":jump_now
+		"jump":jump_now,
+		"dash":Input.is_key_pressed(KEY_SHIFT),
+		"pause":Input.is_key_pressed(KEY_P)
 	}
 	return frame
 
@@ -286,9 +307,12 @@ func _update_hud() -> void:
 	var lit := 0
 	for lantern in sim.game_state.lanterns:
 		if lantern.lit: lit += 1
-	hud.text = "MÂY   ✦ %d   |   Đom đóm: %d/%d   |   Đèn: %d/5   |   Điểm: %d   |   Còn: %03d" % [
-		sim.game_state.flames, sim.game_state.carried, 5, lit,
-		sim.game_state.score, int(ceil(sim.game_state.time_left_s))
+	var time := maxi(0, int(ceil(sim.game_state.time_left_s)))
+	hud.text = "ĐÊM %d   ✦ %d   |   Đom đóm: %d/10   |   Đèn: %d/%d   |   Điểm: %d   |   %02d:%02d\nLướt: %.1fs   Tỏa sáng: %.1fs   Bùa Gió: %.1fs%s" % [
+		current_night, sim.game_state.flames, sim.game_state.carried, lit, sim.game_state.lanterns.size(),
+		campaign_score + sim.game_state.score, time / 60, time % 60,
+		float(sim.game_state.dash_cd_ticks) / 60.0, float(sim.game_state.pulse_cd_ticks) / 60.0, float(sim.game_state.charm_ticks) / 60.0,
+		"   [TẠM DỪNG]" if sim.game_state.paused else ""
 	]
 
 
